@@ -34,6 +34,7 @@ const RECENTS_KEY = 'md-workshop:recents';
 const FAVORITES_KEY = 'md-workshop:favorites';
 const RECENT_FOLDERS_KEY = 'md-workshop:recent-folders';
 const FAVORITE_FOLDERS_KEY = 'md-workshop:favorite-folders';
+const PREVIEW_EDITABLE_KEY = 'md-workshop:preview-editable';
 
 type ViewMode = 'split' | 'edit' | 'preview' | 'graph';
 type GraphModeState = 'local' | 'global';
@@ -87,6 +88,13 @@ export default function App() {
     const stored = Number(localStorage.getItem(SPLIT_RATIO_KEY));
     return Number.isFinite(stored) && stored > 0 ? stored : 0.48;
   });
+  const [previewEditable, setPreviewEditable] = useState<boolean>(() => {
+    return localStorage.getItem(PREVIEW_EDITABLE_KEY) === '1';
+  });
+
+  useEffect(() => {
+    localStorage.setItem(PREVIEW_EDITABLE_KEY, previewEditable ? '1' : '0');
+  }, [previewEditable]);
 
   const [recentPaths, setRecentPaths] = useState<string[]>(() => {
     try { return JSON.parse(localStorage.getItem(RECENTS_KEY) ?? '[]'); } catch { return []; }
@@ -1324,6 +1332,17 @@ ${html}
               </button>
             </div>
           )}
+          {activeDoc && viewMode !== 'graph' && (viewMode === 'split' || viewMode === 'preview') && (
+            <button
+              className={`toolbar-button ${previewEditable ? 'accent' : ''}`}
+              onClick={() => setPreviewEditable((v) => !v)}
+              title={previewEditable
+                ? 'Aperçu éditable activé (cliquer pour désactiver)'
+                : 'Activer l’édition dans l’aperçu'}
+            >
+              {previewEditable ? '✎ Aperçu éditable' : 'Aperçu éditable'}
+            </button>
+          )}
           {rootFolder && (
             <button
               className={`toolbar-button ${viewMode === 'graph' ? 'accent' : ''}`}
@@ -1478,7 +1497,17 @@ ${html}
                   />
 
                   <div className="preview-shell split-pane" style={{ flex: `${1 - splitRatio} 1 0` }}>
-                    <PreviewPane content={activeDoc.content} files={files} activeFilePath={activeDoc.path} rootFolder={rootFolder} onNavigate={(path) => void openFile(path)} onCreateFile={(name) => void createFile(name)} onToggleCheckbox={handleToggleCheckbox} />
+                    <PreviewPane
+                      content={activeDoc.content}
+                      files={files}
+                      activeFilePath={activeDoc.path}
+                      rootFolder={rootFolder}
+                      onNavigate={(path) => void openFile(path)}
+                      onCreateFile={(name) => void createFile(name)}
+                      onToggleCheckbox={handleToggleCheckbox}
+                      editable={previewEditable}
+                      onChange={handleEditorChange}
+                    />
                   </div>
                 </div>
               ) : (
@@ -1498,7 +1527,17 @@ ${html}
                   )}
                   {showPreview && (
                     <div className="preview-shell">
-                      <PreviewPane content={activeDoc.content} files={files} activeFilePath={activeDoc.path} rootFolder={rootFolder} onNavigate={(path) => void openFile(path)} onCreateFile={(name) => void createFile(name)} onToggleCheckbox={handleToggleCheckbox} />
+                      <PreviewPane
+                        content={activeDoc.content}
+                        files={files}
+                        activeFilePath={activeDoc.path}
+                        rootFolder={rootFolder}
+                        onNavigate={(path) => void openFile(path)}
+                        onCreateFile={(name) => void createFile(name)}
+                        onToggleCheckbox={handleToggleCheckbox}
+                        editable={previewEditable}
+                        onChange={handleEditorChange}
+                      />
                     </div>
                   )}
                 </div>

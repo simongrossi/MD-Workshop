@@ -3099,3 +3099,28 @@ button {
   border: none;
   border-radius: 0;
 }
+
+/* ── Editable preview (TipTap / ProseMirror) ──────────────────────── */
+
+.preview-pane-editable .ProseMirror-preview {
+  outline: none;
+  min-height: 200px;
+  caret-color: var(--accent);
+}
+
+.preview-pane-editable .ProseMirror-preview:focus-visible {
+  outline: none;
+}
+
+.preview-pane-editable .ProseMirror-preview p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  color: var(--muted);
+  float: left;
+  height: 0;
+  pointer-events: none;
+}
+
+.preview-pane-editable .ProseMirror-preview .ProseMirror-selectednode {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
