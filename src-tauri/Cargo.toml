@@ -1,6 +1,6 @@
 [package]
 name = "md-workshop"
-version = "0.2.0"
+version = "0.3.0"
 description = "Markdown workshop desktop app"
 authors = ["Simon Grossi"]
 edition = "2021"
@@ -23,3 +23,4 @@ chrono = { version = "0.4", features = ["serde"] }
 regex = "1.11"
 rusqlite = { version = "0.35", features = ["bundled"] }
 rayon = "1.10"
+pdf-inspector = { git = "https://github.com/firecrawl/pdf-inspector", rev = "cf2faa3221262651bd76808d3a887c70b36777d9" }

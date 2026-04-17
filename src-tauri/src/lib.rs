@@ -329,6 +329,83 @@ fn backup_path_for(path: &Path) -> PathBuf {
     path.with_file_name(format!("{}.bak", file_name))
 }
 
+#[derive(Debug, Serialize)]
+struct PdfConversionResult {
+    pdf_type: String,
+    markdown: Option<String>,
+    page_count: u32,
+    pages_needing_ocr: Vec<u32>,
+    title: Option<String>,
+}
+
+fn do_convert_pdf(bytes: &[u8]) -> Result<PdfConversionResult, String> {
+    let result = pdf_inspector::process_pdf_mem(bytes)
+        .map_err(|e| format!("Échec de l'analyse du PDF : {e}"))?;
+
+    let pdf_type = match result.pdf_type {
+        pdf_inspector::PdfType::TextBased => "text_based",
+        pdf_inspector::PdfType::Scanned => "scanned",
+        pdf_inspector::PdfType::ImageBased => "image_based",
+        pdf_inspector::PdfType::Mixed => "mixed",
+    }
+    .to_string();
+
+    Ok(PdfConversionResult {
+        pdf_type,
+        markdown: result.markdown,
+        page_count: result.page_count,
+        pages_needing_ocr: result.pages_needing_ocr,
+        title: result.title,
+    })
+}
+
+#[tauri::command]
+fn convert_pdf_to_markdown(pdf_bytes: Vec<u8>) -> Result<PdfConversionResult, String> {
+    do_convert_pdf(&pdf_bytes)
+}
+
+#[tauri::command]
+fn convert_pdf_path_to_markdown(path: String) -> Result<PdfConversionResult, String> {
+    let bytes = fs::read(&path).map_err(|e| format!("Impossible de lire le PDF : {e}"))?;
+    do_convert_pdf(&bytes)
+}
+
+#[tauri::command]
+fn reveal_in_file_manager(path: String) -> Result<(), String> {
+    use std::process::Command;
+    let p = Path::new(&path);
+    if !p.exists() {
+        return Err("Le fichier n'existe pas.".into());
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open")
+            .args(["-R", &path])
+            .status()
+            .map_err(|e| format!("Impossible d'ouvrir le Finder : {e}"))?;
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        Command::new("explorer")
+            .arg(format!("/select,{}", path))
+            .status()
+            .map_err(|e| format!("Impossible d'ouvrir l'Explorateur : {e}"))?;
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let target = p.parent().unwrap_or(p);
+        Command::new("xdg-open")
+            .arg(target.as_os_str())
+            .status()
+            .map_err(|e| format!("Impossible d'ouvrir le gestionnaire de fichiers : {e}"))?;
+    }
+
+    Ok(())
+}
+
 #[tauri::command]
 fn create_markdown_file(root_path: String, name: String) -> Result<String, String> {
     let root = canonicalize_root(&root_path)?;
@@ -1054,6 +1131,9 @@ pub fn run() {
             read_markdown_file,
             save_markdown_file,
             create_markdown_file,
+            convert_pdf_to_markdown,
+            convert_pdf_path_to_markdown,
+            reveal_in_file_manager,
             save_as_markdown_file,
             rename_markdown_file,
             delete_markdown_file,

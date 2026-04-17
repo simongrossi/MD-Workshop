@@ -57,6 +57,7 @@ Vision : l'outil ultime léger du Markdown. Un Obsidian minimaliste, rapide, san
 
 - [x] Thèmes light/dark (custom à venir)
 - [ ] Export PDF
+- [x] **Import PDF** (conversion PDF → Markdown via pdf-inspector, sans OCR)
 - [ ] Export HTML statique (mini-site)
 - [x] Copier en HTML riche (pour coller dans un email)
 - [ ] Front matter intelligent (autocomplétion des clés)

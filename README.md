@@ -28,6 +28,7 @@
 - **Renommage intelligent** : met à jour tous les `[[liens]]` et liens relatifs du workspace
 - Backup automatique `.bak` avant sauvegarde
 - Note du jour (`Ctrl+D`) — création/ouverture de `YYYY-MM-DD.md`
+- **Menu contextuel** (clic droit sur un fichier) : Ouvrir, Afficher dans le Finder / Explorateur, Renommer, Copier le chemin, Favoris, Supprimer
 
 ### ✏️ Édition
 - CodeMirror 6 avec highlight Markdown + wiki-links
@@ -70,6 +71,11 @@
 - **Copier en HTML riche** (presse-papiers → coller dans un email)
 - **Copier pour WhatsApp** (`Ctrl+Shift+W`) — conversion du Markdown vers la syntaxe *WhatsApp*
 
+### 📥 Import PDF
+- **Conversion PDF → Markdown** via [pdf-inspector](https://github.com/firecrawl/pdf-inspector) (100 % local, pas d'OCR, pas d'API)
+- Trois points d'entrée : commande palette, bouton sur l'écran d'accueil, glisser-déposer depuis le Finder n'importe où dans la fenêtre
+- Détection des PDF scannés (signalés comme non convertibles sans OCR)
+
 ### 🎓 Découverte
 - **Dossier démo** — bouton sur l'écran d'accueil + entrée permanente dans la modale des bibliothèques (copie 10 notes liées dans `Documents/MD-Workshop-Demo/`)
 
@@ -79,6 +85,7 @@
 - Vues **Édition / Split / Aperçu / Graphe** redimensionnables
 - Sidebar + split redimensionnables, tailles persistées
 - **Palette de commandes** (`Ctrl+Shift+P`)
+- **Barre de statut** (type Notepad++) : position curseur, caractères, mots, lignes, encodage UTF-8, EOL
 
 ## Raccourcis clavier
 

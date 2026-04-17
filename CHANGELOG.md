@@ -3,6 +3,53 @@
 Toutes les évolutions notables du projet sont listées ici.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et le projet applique [SemVer](https://semver.org/lang/fr/).
 
+## [0.3.0] — 2026-04-18
+
+### Ajouté — Import PDF
+
+- **Conversion PDF → Markdown** via [firecrawl/pdf-inspector](https://github.com/firecrawl/pdf-inspector) (crate Rust, `lopdf`, 100 % local — aucun service externe).
+- Trois points d'entrée :
+  - **Palette / menu Fichier** → « Importer un PDF… » (ouvre un file picker).
+  - **Écran d'accueil** → bouton « Importer un PDF… » et zone de glisser-déposer dédiée.
+  - **Glisser-déposer** depuis le Finder / Explorateur n'importe où dans la fenêtre (listener `onDragDropEvent` natif Tauri 2, fonctionne même là où les events HTML sont interceptés).
+- Détection du type de PDF :
+  - `text_based` / `mixed` → converti en `.md` créé dans le workspace, ouvert automatiquement dans un onglet.
+  - `scanned` → message explicite dans la barre de statut (OCR non supporté).
+- Si aucun dossier n'est ouvert au moment du drop, ouverture automatique du picker de dossier puis conversion dans le dossier choisi.
+- Nouvelles commandes Tauri : `convert_pdf_to_markdown` (bytes) et `convert_pdf_path_to_markdown` (chemin).
+
+### Ajouté — Menu contextuel sur les fichiers
+
+- **Clic droit** sur un fichier dans l'arbre → menu avec :
+  - Ouvrir
+  - **Afficher dans le Finder / Explorateur** (cross-platform — `open -R` macOS, `explorer /select,` Windows, `xdg-open` Linux)
+  - Renommer… (avec option de mise à jour des `[[liens]]`)
+  - Copier le chemin (dans le presse-papier)
+  - Ajouter / retirer des favoris
+  - Supprimer… (avec confirmation et avertissement si modifications non sauvées)
+- Nouvelle commande Tauri `reveal_in_file_manager`.
+
+### Ajouté — Barre de statut (type Notepad++)
+
+- Footer fin en bas de la fenêtre avec :
+  - **Position du curseur** — `Ln X, Col Y` (+ `(N sél.)` quand sélection active)
+  - **Caractères**, **mots**, **lignes** du document actif
+  - **Markdown** / **UTF-8** / **LF**
+  - Message de statut contextuel à gauche (import PDF, enregistrement, etc.)
+- Mise à jour en temps réel via un `EditorView.updateListener` CodeMirror exposé par un nouveau callback `onCursorChange`.
+
+### Ajouté — Menus natifs
+
+- Entrée **Fichier → Importer un PDF…** dans la barre de menus macOS / Windows.
+
+### Technique
+
+- Dépendance Rust : `pdf-inspector = { git = "…", rev = "cf2faa3…" }` épinglée à un commit précis pour la reproductibilité.
+- Nouveau type TS `CursorInfo` exporté depuis `src/lib/codemirror.ts`.
+- Refactor : `chooseFolder()` renvoie désormais `Promise<string | null>` (chemin sélectionné) pour permettre le chaînage « ouvrir dossier puis importer PDF » sans race condition avec le state React.
+
+---
+
 ## [0.2.0] — 2026-04-17
 
 ### Ajouté — Phase 4 : Vue Graphe

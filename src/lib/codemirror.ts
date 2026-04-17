@@ -173,12 +173,20 @@ const DEFAULT_EDITOR_SETTINGS: EditorSettings = {
   tabSize: 2
 };
 
+export type CursorInfo = {
+  line: number;
+  col: number;
+  offset: number;
+  selectionLength: number;
+};
+
 export function createMarkdownState(
   doc: string,
   onChange: (value: string) => void,
   files: WikiLinkFile[] = [],
   editorSettings: EditorSettings = DEFAULT_EDITOR_SETTINGS,
-  snippets: Snippet[] = []
+  snippets: Snippet[] = [],
+  onCursorChange?: (info: CursorInfo) => void
 ) {
   return EditorState.create({
     doc,
@@ -204,6 +212,16 @@ export function createMarkdownState(
       EditorView.updateListener.of((update) => {
         if (update.docChanged) {
           onChange(update.state.doc.toString());
+        }
+        if (onCursorChange && (update.selectionSet || update.docChanged)) {
+          const sel = update.state.selection.main;
+          const line = update.state.doc.lineAt(sel.head);
+          onCursorChange({
+            line: line.number,
+            col: sel.head - line.from + 1,
+            offset: sel.head,
+            selectionLength: sel.to - sel.from
+          });
         }
       })
     ]

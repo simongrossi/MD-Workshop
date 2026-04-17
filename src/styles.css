@@ -333,9 +333,48 @@ button {
 
 .app-shell {
   display: grid;
-  grid-template-rows: 56px 1fr;
+  grid-template-rows: 56px 1fr auto;
   height: 100vh;
   background: var(--bg);
+}
+
+.statusbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  height: 22px;
+  padding: 0 12px;
+  border-top: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--muted);
+  font-size: 11px;
+  font-family: -apple-system, "Segoe UI", sans-serif;
+  user-select: none;
+}
+
+.statusbar-left,
+.statusbar-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.statusbar-msg {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.statusbar-cell {
+  white-space: nowrap;
+  padding: 0 4px;
+  border-left: 1px solid var(--line);
+}
+
+.statusbar-cell:first-child {
+  border-left: 0;
 }
 
 .topbar {

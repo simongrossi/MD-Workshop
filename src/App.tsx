@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { open } from '@tauri-apps/plugin-dialog';
 import { Menu, Submenu } from '@tauri-apps/api/menu';
 import { BacklinksPanel } from './components/BacklinksPanel';
@@ -52,6 +53,7 @@ function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max);
 }
 
+
 export default function App() {
   const [rootFolder, setRootFolder] = useState<string | null>(null);
   const [files, setFiles] = useState<MarkdownFileEntry[]>([]);
@@ -80,6 +82,8 @@ export default function App() {
   const [snippetsOpen, setSnippetsOpen] = useState(false);
   const [snippets, setSnippets] = useState<Snippet[]>(() => loadSnippets());
   const [brokenLinksOpen, setBrokenLinksOpen] = useState(false);
+  const [welcomeDropActive, setWelcomeDropActive] = useState(false);
+  const [cursorInfo, setCursorInfo] = useState<{ line: number; col: number; selectionLength: number } | null>(null);
   const [sidebarWidth, setSidebarWidth] = useState(() => {
     const stored = Number(localStorage.getItem(SIDEBAR_WIDTH_KEY));
     return Number.isFinite(stored) && stored > 0 ? stored : 308;
@@ -123,6 +127,7 @@ export default function App() {
     closeActiveTab: () => void;
     closeAllTabs: () => void;
     promptCreateFile: () => void;
+    importPdf: () => void;
     openDailyNote: () => void;
     openSettings: () => void;
     openFile: (path: string) => void;
@@ -145,6 +150,7 @@ export default function App() {
     closeActiveTab: () => undefined,
     closeAllTabs: () => undefined,
     promptCreateFile: () => undefined,
+    importPdf: () => undefined,
     openDailyNote: () => undefined,
     openSettings: () => undefined,
     openFile: () => undefined,
@@ -180,6 +186,15 @@ export default function App() {
 
   const favorites = useMemo(() => new Set(favoritePaths), [favoritePaths]);
 
+  const docStats = useMemo(() => {
+    const content = activeDoc?.content ?? '';
+    if (!activeDoc) return null;
+    const chars = content.length;
+    const lines = content === '' ? 0 : content.split('\n').length;
+    const words = content.trim() === '' ? 0 : content.trim().split(/\s+/).length;
+    return { chars, lines, words };
+  }, [activeDoc]);
+
   const recentFiles = useMemo(
     () =>
       recentPaths
@@ -207,6 +222,7 @@ export default function App() {
   const paletteCommands = useMemo<PaletteCommand[]>(() => {
     const cmds: PaletteCommand[] = [
       { id: 'file.new', label: 'Nouveau fichier…', shortcut: 'Ctrl+N', category: 'Fichier', action: () => promptCreateFile() },
+      { id: 'file.import-pdf', label: 'Importer un PDF…', category: 'Fichier', action: () => void importPdfFromDialog() },
       { id: 'file.open-folder', label: 'Ouvrir un dossier…', shortcut: 'Ctrl+O', category: 'Fichier', action: () => void chooseFolder() },
       { id: 'file.load-demo', label: 'Charger le dossier démo', category: 'Fichier', action: () => void loadDemoWorkspace(false) },
       { id: 'file.reset-demo', label: 'Réinitialiser le dossier démo', category: 'Fichier', action: () => void loadDemoWorkspace(true) },
@@ -343,6 +359,45 @@ export default function App() {
     if (viewMode !== 'graph' && graphFullscreen) setGraphFullscreen(false);
   }, [viewMode, graphFullscreen]);
 
+  // Native Tauri window-level drag-drop — catches files dropped anywhere
+  // (editor, preview, welcome screen). On macOS/Tauri 2 the OS drag events
+  // are intercepted natively and never reach the webview's HTML drop handler.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    (async () => {
+      const w = getCurrentWebview();
+      const off = await w.onDragDropEvent(async (event) => {
+        const payload = event.payload as { type: string; paths?: string[] };
+        if (payload.type !== 'drop') {
+          if (payload.type === 'enter' || payload.type === 'over') {
+            const paths = payload.paths ?? [];
+            if (paths.some((p) => p.toLowerCase().endsWith('.pdf'))) {
+              setWelcomeDropActive(true);
+            }
+          } else if (payload.type === 'leave') {
+            setWelcomeDropActive(false);
+          }
+          return;
+        }
+        setWelcomeDropActive(false);
+        const paths = payload.paths ?? [];
+        const pdfs = paths.filter((p) => p.toLowerCase().endsWith('.pdf'));
+        if (pdfs.length === 0) return;
+        for (const pdfPath of pdfs) {
+          await importPdfFromPath(pdfPath);
+        }
+      });
+      if (cancelled) off();
+      else unlisten = off;
+    })();
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [rootFolder]);
+
+
   // Persist graph preferences whenever they change
   useEffect(() => {
     setSettings((prev) => {
@@ -428,20 +483,20 @@ export default function App() {
     }
   }
 
-  async function chooseFolder() {
+  async function chooseFolder(): Promise<string | null> {
     const selected = await open({
       directory: true,
       multiple: false,
       title: 'Choisir un dossier Markdown'
     });
 
-    if (typeof selected !== 'string') return;
+    if (typeof selected !== 'string') return null;
 
     if (anyTabDirty) {
       const ok = window.confirm(
         'Des onglets contiennent des modifications non enregistrées. Continuer et les fermer ?'
       );
-      if (!ok) return;
+      if (!ok) return null;
     }
 
     localStorage.setItem(LAST_FOLDER_KEY, selected);
@@ -453,6 +508,7 @@ export default function App() {
     setSearchQuery('');
     setSearchResults([]);
     setQuickOpenOpen(false);
+    return selected;
   }
 
   async function openFile(path: string) {
@@ -619,6 +675,125 @@ export default function App() {
     }
   }
 
+  async function revealFileInFinder(targetPath: string) {
+    try {
+      await invoke('reveal_in_file_manager', { path: targetPath });
+    } catch (error) {
+      setStatus(`Impossible d'ouvrir l'emplacement : ${String(error)}`);
+    }
+  }
+
+  async function copyFilePath(targetPath: string) {
+    try {
+      await navigator.clipboard.writeText(targetPath);
+      setStatus('Chemin copié dans le presse-papier.');
+    } catch (error) {
+      setStatus(`Impossible de copier le chemin : ${String(error)}`);
+    }
+  }
+
+  async function renameFileAt(targetPath: string) {
+    if (!rootFolder) return;
+    const meta = files.find((f) => f.path === targetPath);
+    const displayName = meta?.name ?? targetPath.split(/[\\/]/).pop() ?? 'document.md';
+    const currentName = displayName.replace(/\.(md|markdown|mdx)$/i, '');
+
+    const newName = window.prompt('Nouveau nom (sans extension) :', currentName);
+    if (!newName || !newName.trim() || newName.trim() === currentName) return;
+
+    const openTab = openTabs.find((t) => t.path === targetPath);
+    if (openTab && openTab.content !== openTab.savedContent) {
+      const ok = window.confirm(
+        'Le fichier contient des modifications non enregistrées. Enregistrer et renommer ?'
+      );
+      if (!ok) return;
+      try {
+        await invoke('save_markdown_file', {
+          rootPath: rootFolder,
+          path: targetPath,
+          content: openTab.content
+        });
+        updateTab(targetPath, (tab) => ({ ...tab, savedContent: tab.content }));
+      } catch (error) {
+        setStatus(`Impossible d'enregistrer : ${String(error)}`);
+        return;
+      }
+    }
+
+    const updateLinks = window.confirm(
+      `Mettre à jour aussi tous les [[${currentName}]] et liens relatifs dans le workspace ?\n\n` +
+        `OK = renommer partout\nAnnuler = juste renommer le fichier`
+    );
+
+    try {
+      const result = await invoke<RenameResult>('rename_markdown_file', {
+        rootPath: rootFolder,
+        path: targetPath,
+        newName: newName.trim(),
+        updateLinks
+      });
+
+      if (openTab) {
+        setOpenTabs((tabs) => tabs.filter((t) => t.path !== targetPath));
+        await refreshFiles(rootFolder);
+        await openFile(result.new_path);
+      } else {
+        await refreshFiles(rootFolder);
+      }
+
+      if (updateLinks && result.links_updated > 0) {
+        setStatus(
+          `Renommé. ${result.links_updated} lien(s) mis à jour dans ${result.files_updated} fichier(s).`
+        );
+      } else {
+        setStatus(`Renommé : ${newName.trim()}`);
+      }
+    } catch (error) {
+      setStatus(`Impossible de renommer : ${String(error)}`);
+    }
+  }
+
+  async function deleteFileAt(targetPath: string) {
+    if (!rootFolder) return;
+    const meta = files.find((f) => f.path === targetPath);
+    const displayName = meta?.name ?? targetPath.split(/[\\/]/).pop() ?? 'ce fichier';
+
+    const openTab = openTabs.find((t) => t.path === targetPath);
+    if (openTab && openTab.content !== openTab.savedContent) {
+      const ok = window.confirm(
+        `"${displayName}" contient des modifications non enregistrées. Supprimer quand même ?`
+      );
+      if (!ok) return;
+    }
+
+    const ok = window.confirm(
+      `Supprimer définitivement "${displayName}" ?\n\nCette action est irréversible.`
+    );
+    if (!ok) return;
+
+    try {
+      await invoke('delete_markdown_file', { rootPath: rootFolder, path: targetPath });
+
+      if (openTab) {
+        setOpenTabs((tabs) => {
+          const idx = tabs.findIndex((t) => t.path === targetPath);
+          const next = tabs.filter((t) => t.path !== targetPath);
+          if (activeTabPath === targetPath) {
+            const neighbor = next[Math.min(idx, next.length - 1)] ?? null;
+            setActiveTabPath(neighbor?.path ?? null);
+          }
+          return next;
+        });
+      }
+      setRecentPaths((prev) => prev.filter((p) => p !== targetPath));
+      setFavoritePaths((prev) => prev.filter((p) => p !== targetPath));
+      await refreshFiles(rootFolder);
+      setStatus(`Fichier supprimé : ${displayName}`);
+    } catch (error) {
+      setStatus(`Impossible de supprimer : ${String(error)}`);
+    }
+  }
+
   async function exportToHtml() {
     if (!activeDoc) return;
     try {
@@ -771,6 +946,120 @@ ${html}
     void createFile(name.trim());
   }
 
+  type PdfConversionResult = {
+    pdf_type: 'text_based' | 'scanned' | 'image_based' | 'mixed';
+    markdown: string | null;
+    page_count: number;
+    pages_needing_ocr: number[];
+    title: string | null;
+  };
+
+  async function finalizePdfImport(
+    conversion: PdfConversionResult,
+    sourceName: string,
+    targetRoot: string
+  ): Promise<void> {
+    if (conversion.pdf_type === 'scanned' || !conversion.markdown) {
+      setStatus(
+        `PDF "${sourceName}" non convertible (type : ${conversion.pdf_type}). ` +
+          `Ce PDF semble scanné — OCR non supporté.`
+      );
+      return;
+    }
+
+    const baseName = sourceName.replace(/\.pdf$/i, '').trim() || 'document-pdf';
+    try {
+      const newPath = await invoke<string>('create_markdown_file', {
+        rootPath: targetRoot,
+        name: baseName
+      });
+      await invoke('save_markdown_file', {
+        rootPath: targetRoot,
+        path: newPath,
+        content: conversion.markdown
+      });
+      await refreshFiles(targetRoot);
+
+      // Open the new tab directly without going through openFile(),
+      // because after a just-selected workspace the rootFolder state
+      // isn't yet reflected in openFile's closure.
+      const fileName = newPath.split(/[\\/]/).pop() ?? `${baseName}.md`;
+      const relativePath = newPath.startsWith(targetRoot)
+        ? newPath.slice(targetRoot.length).replace(/^[\\/]+/, '')
+        : fileName;
+      const newTab: OpenedDocument = {
+        path: newPath,
+        relativePath,
+        name: fileName,
+        content: conversion.markdown,
+        savedContent: conversion.markdown
+      };
+      setOpenTabs((tabs) =>
+        tabs.some((t) => t.path === newPath) ? tabs : [...tabs, newTab]
+      );
+      setActiveTabPath(newPath);
+      addToRecents(newPath);
+
+      const suffix =
+        conversion.pdf_type === 'mixed'
+          ? ` (mixte, ${conversion.pages_needing_ocr.length} page(s) nécessitant OCR ignorée(s))`
+          : '';
+      setStatus(`PDF importé : ${baseName}.md (${conversion.page_count} page(s))${suffix}`);
+    } catch (error) {
+      setStatus(`Impossible de créer le fichier depuis le PDF : ${String(error)}`);
+    }
+  }
+
+  async function resolveTargetRoot(): Promise<string | null> {
+    if (rootFolder) return rootFolder;
+    setStatus('Choisissez un dossier de destination pour le PDF…');
+    return await chooseFolder();
+  }
+
+  async function importPdfFromFile(file: File): Promise<void> {
+    const targetRoot = await resolveTargetRoot();
+    if (!targetRoot) return;
+    try {
+      const buffer = await file.arrayBuffer();
+      const bytes = Array.from(new Uint8Array(buffer));
+      setStatus(`Conversion du PDF "${file.name}"…`);
+      const conversion = await invoke<PdfConversionResult>('convert_pdf_to_markdown', {
+        pdfBytes: bytes
+      });
+      await finalizePdfImport(conversion, file.name, targetRoot);
+    } catch (error) {
+      setStatus(`Échec de la conversion du PDF : ${String(error)}`);
+    }
+  }
+
+  async function importPdfFromPath(pdfPath: string): Promise<void> {
+    const targetRoot = await resolveTargetRoot();
+    if (!targetRoot) return;
+    const fileName = pdfPath.split(/[\\/]/).pop() ?? 'document.pdf';
+    try {
+      setStatus(`Conversion du PDF "${fileName}"…`);
+      const conversion = await invoke<PdfConversionResult>('convert_pdf_path_to_markdown', {
+        path: pdfPath
+      });
+      await finalizePdfImport(conversion, fileName, targetRoot);
+    } catch (error) {
+      setStatus(`Échec de la conversion du PDF : ${String(error)}`);
+    }
+  }
+
+  async function importPdfFromDialog(): Promise<void> {
+    const targetRoot = await resolveTargetRoot();
+    if (!targetRoot) return;
+    const selected = await open({
+      multiple: false,
+      directory: false,
+      filters: [{ name: 'PDF', extensions: ['pdf'] }],
+      title: 'Importer un PDF'
+    });
+    if (typeof selected !== 'string') return;
+    await importPdfFromPath(selected);
+  }
+
   async function openDailyNote() {
     if (!rootFolder) {
       void chooseFolder();
@@ -895,6 +1184,7 @@ ${html}
     },
     closeAllTabs: () => closeAllTabs(),
     promptCreateFile: () => promptCreateFile(),
+    importPdf: () => void importPdfFromDialog(),
     openDailyNote: () => void openDailyNote(),
     openSettings: () => setSettingsOpen(true),
     openFile: (path: string) => void openFile(path),
@@ -1059,6 +1349,11 @@ ${html}
               text: 'Note du jour',
               accelerator: 'CmdOrCtrl+D',
               action: () => menuActionsRef.current.openDailyNote()
+            },
+            {
+              id: 'file.import-pdf',
+              text: 'Importer un PDF…',
+              action: () => menuActionsRef.current.importPdf()
             },
             { item: 'Separator' },
             {
@@ -1385,6 +1680,10 @@ ${html}
             favorites={favorites}
             onToggleFavorite={toggleFavorite}
             onCreateNew={promptCreateFile}
+            onRevealInFinder={(p) => void revealFileInFinder(p)}
+            onRenameFile={(p) => void renameFileAt(p)}
+            onDeleteFile={(p) => void deleteFileAt(p)}
+            onCopyPath={(p) => void copyFilePath(p)}
           />
 
           <SearchPanel
@@ -1485,6 +1784,7 @@ ${html}
                       settings={editorSettings}
                       snippets={snippets}
                       onImageDrop={handleImageDrop}
+                      onCursorChange={setCursorInfo}
                     />
                   </section>
 
@@ -1522,6 +1822,7 @@ ${html}
                         settings={editorSettings}
                         snippets={snippets}
                         onImageDrop={handleImageDrop}
+                        onCursorChange={setCursorInfo}
                       />
                     </section>
                   )}
@@ -1544,13 +1845,25 @@ ${html}
               )}
             </div>
           ) : (
-            <section className="welcome-screen">
+            <section
+              className={`welcome-screen${welcomeDropActive ? ' drop-active' : ''}`}
+            >
               <p className="sidebar-kicker">MD Workshop</p>
               <h2>Un atelier Markdown très simple.</h2>
               <p>Ouvre un dossier local pour parcourir, éditer et prévisualiser tes notes sans distraction.</p>
+              <p style={{ opacity: 0.7, fontSize: '0.9em' }}>
+                Astuce : glisse un PDF ici pour le convertir en Markdown.
+              </p>
               <div className="welcome-actions">
                 <button className="toolbar-button accent" onClick={() => void chooseFolder()}>
                   Ouvrir un dossier
+                </button>
+                <button
+                  className="toolbar-button"
+                  onClick={() => void importPdfFromDialog()}
+                  title="Convertir un PDF en fichier Markdown"
+                >
+                  Importer un PDF…
                 </button>
                 {!rootFolder && (
                   <button
@@ -1584,6 +1897,34 @@ ${html}
           )}
         </section>
       </main>
+
+      <footer className="statusbar" role="contentinfo">
+        <div className="statusbar-left">
+          <span className="statusbar-msg">{status}</span>
+        </div>
+        <div className="statusbar-right">
+          {activeDoc && (
+            <>
+              {cursorInfo && (
+                <span className="statusbar-cell">
+                  Ln {cursorInfo.line}, Col {cursorInfo.col}
+                  {cursorInfo.selectionLength > 0 && ` (${cursorInfo.selectionLength} sél.)`}
+                </span>
+              )}
+              {docStats && (
+                <>
+                  <span className="statusbar-cell">{docStats.chars.toLocaleString('fr-FR')} car.</span>
+                  <span className="statusbar-cell">{docStats.words.toLocaleString('fr-FR')} mots</span>
+                  <span className="statusbar-cell">{docStats.lines.toLocaleString('fr-FR')} lignes</span>
+                </>
+              )}
+              <span className="statusbar-cell">Markdown</span>
+              <span className="statusbar-cell">UTF-8</span>
+              <span className="statusbar-cell">LF</span>
+            </>
+          )}
+        </div>
+      </footer>
 
       <QuickOpen open={quickOpenOpen} files={files} onOpenFile={openFile} onClose={() => setQuickOpenOpen(false)} />
 

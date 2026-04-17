@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import clsx from 'clsx';
 import type { MarkdownFileEntry } from '../types';
 
@@ -13,6 +13,16 @@ type Props = {
   favorites: Set<string>;
   onToggleFavorite: (path: string) => void;
   onCreateNew: () => void;
+  onRevealInFinder?: (path: string) => void;
+  onRenameFile?: (path: string) => void;
+  onDeleteFile?: (path: string) => void;
+  onCopyPath?: (path: string) => void;
+};
+
+type ContextMenuState = {
+  x: number;
+  y: number;
+  file: MarkdownFileEntry;
 };
 
 const SORT_KEY = 'md-workshop:sort-by';
@@ -69,7 +79,25 @@ function formatDate(unix: number | null): string {
   return date.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: '2-digit' });
 }
 
-export function FileTree({ files, activePath, filter, onFilterChange, onSelect, favorites, onToggleFavorite, onCreateNew }: Props) {
+export function FileTree({ files, activePath, filter, onFilterChange, onSelect, favorites, onToggleFavorite, onCreateNew, onRevealInFinder, onRenameFile, onDeleteFile, onCopyPath }: Props) {
+  const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
+
+  useEffect(() => {
+    if (!contextMenu) return;
+    const close = () => setContextMenu(null);
+    const onEsc = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setContextMenu(null);
+    };
+    window.addEventListener('pointerdown', close);
+    window.addEventListener('resize', close);
+    window.addEventListener('keydown', onEsc);
+    return () => {
+      window.removeEventListener('pointerdown', close);
+      window.removeEventListener('resize', close);
+      window.removeEventListener('keydown', onEsc);
+    };
+  }, [contextMenu]);
+
   const [sortKey, setSortKey] = useState<SortKey>(() => {
     const stored = localStorage.getItem(SORT_KEY);
     return (stored === 'name' || stored === 'date' || stored === 'size') ? stored : 'name';
@@ -131,6 +159,11 @@ export function FileTree({ files, activePath, filter, onFilterChange, onSelect, 
         key={file.path}
         className={clsx('file-row', activePath === file.path && 'active')}
         onClick={() => onSelect(file)}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          setContextMenu({ x: e.clientX, y: e.clientY, file });
+        }}
         onKeyDown={(e) => {
           if (e.key === 'Enter' || e.key === ' ') {
             e.preventDefault();
@@ -222,6 +255,84 @@ export function FileTree({ files, activePath, filter, onFilterChange, onSelect, 
           </>
         )}
       </div>
+
+      {contextMenu && (
+        <div
+          className="editor-context-menu"
+          style={{ position: 'fixed', left: contextMenu.x, top: contextMenu.y, zIndex: 1000 }}
+          onPointerDown={(e) => e.stopPropagation()}
+          onMouseDown={(e) => e.preventDefault()}
+        >
+          <button
+            type="button"
+            className="editor-context-item"
+            onClick={() => {
+              onSelect(contextMenu.file);
+              setContextMenu(null);
+            }}
+          >
+            Ouvrir
+          </button>
+          {onRevealInFinder && (
+            <button
+              type="button"
+              className="editor-context-item"
+              onClick={() => {
+                onRevealInFinder(contextMenu.file.path);
+                setContextMenu(null);
+              }}
+            >
+              Afficher dans le Finder
+            </button>
+          )}
+          {onRenameFile && (
+            <button
+              type="button"
+              className="editor-context-item"
+              onClick={() => {
+                onRenameFile(contextMenu.file.path);
+                setContextMenu(null);
+              }}
+            >
+              Renommer…
+            </button>
+          )}
+          {onCopyPath && (
+            <button
+              type="button"
+              className="editor-context-item"
+              onClick={() => {
+                onCopyPath(contextMenu.file.path);
+                setContextMenu(null);
+              }}
+            >
+              Copier le chemin
+            </button>
+          )}
+          <button
+            type="button"
+            className="editor-context-item"
+            onClick={() => {
+              onToggleFavorite(contextMenu.file.path);
+              setContextMenu(null);
+            }}
+          >
+            {favorites.has(contextMenu.file.path) ? 'Retirer des favoris' : 'Ajouter aux favoris'}
+          </button>
+          {onDeleteFile && (
+            <button
+              type="button"
+              className="editor-context-item danger"
+              onClick={() => {
+                onDeleteFile(contextMenu.file.path);
+                setContextMenu(null);
+              }}
+            >
+              Supprimer…
+            </button>
+          )}
+        </div>
+      )}
     </section>
   );
 }

@@ -12,6 +12,7 @@ import {
   tabSizeCompartment,
   wikiLinkFilesCompartment,
   wikiLinkFilesFacet,
+  type CursorInfo,
   type EditorSettings,
   type WikiLinkFile
 } from '../lib/codemirror';
@@ -37,6 +38,8 @@ type Props = {
    * a markdown image link. Return whether drop was handled.
    */
   onImageDrop?: (files: File[]) => Promise<string[]>;
+  /** Fires whenever the cursor moves or the document changes. */
+  onCursorChange?: (info: CursorInfo) => void;
 };
 
 type ContextMenuState = {
@@ -53,16 +56,21 @@ export type MarkdownEditorHandle = {
   insertAtCursor: (text: string) => void;
 };
 
-export const MarkdownEditor = forwardRef<MarkdownEditorHandle, Props>(function MarkdownEditor({ value, onChange, wikiLinkFiles = [], settings, snippets = [], onImageDrop }, ref) {
+export const MarkdownEditor = forwardRef<MarkdownEditorHandle, Props>(function MarkdownEditor({ value, onChange, wikiLinkFiles = [], settings, snippets = [], onImageDrop, onCursorChange }, ref) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const viewRef = useRef<EditorView | null>(null);
   const latestOnChange = useRef(onChange);
+  const latestOnCursorChange = useRef(onCursorChange);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [dropActive, setDropActive] = useState(false);
 
   useEffect(() => {
     latestOnChange.current = onChange;
   }, [onChange]);
+
+  useEffect(() => {
+    latestOnCursorChange.current = onCursorChange;
+  }, [onCursorChange]);
 
   useImperativeHandle(
     ref,
@@ -118,7 +126,8 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, Props>(function M
       (next) => latestOnChange.current(next),
       wikiLinkFiles,
       settings,
-      snippets
+      snippets,
+      (info) => latestOnCursorChange.current?.(info)
     );
     const view = new EditorView({
       state,
