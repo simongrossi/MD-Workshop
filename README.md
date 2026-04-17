@@ -55,14 +55,26 @@
 - **Favoris fichiers** (épinglés en haut) et **historique** des récents
 - Métadonnées contextuelles (date relative, taille) selon le tri
 
+### 🕸️ Vue graphe (`Alt+4`)
+- **Graphe local** — connexions du fichier actif (profondeur 1–3 sauts)
+- **Graphe global** — carte complète du workspace
+- **Filtres** — dossier, tags (multi-sélection), orphelins on/off
+- **Navigation** — clic = ouvre + recentre, double-clic = ouvre en mode split
+- **Plein écran** (bouton dédié, `Esc` pour sortir)
+- Rendu Canvas + `d3-force` (léger, thème auto via CSS vars)
+
 ### 📤 Export
 - **Exporter en HTML** (fichier autonome avec styles)
 - **Copier en HTML riche** (presse-papiers → coller dans un email)
+- **Copier pour WhatsApp** (`Ctrl+Shift+W`) — conversion du Markdown vers la syntaxe *WhatsApp*
+
+### 🎓 Découverte
+- **Dossier démo** — bouton sur l'écran d'accueil + entrée permanente dans la modale des bibliothèques (copie 10 notes liées dans `Documents/MD-Workshop-Demo/`)
 
 ### 🎨 Interface
 - **Thème clair / sombre**
 - Paramètres (`Ctrl+,`) : police, taille, wrap, numéros, tab size, thème, mode par défaut
-- Vues **Édition / Split / Aperçu** redimensionnables
+- Vues **Édition / Split / Aperçu / Graphe** redimensionnables
 - Sidebar + split redimensionnables, tailles persistées
 - **Palette de commandes** (`Ctrl+Shift+P`)
 
@@ -80,18 +92,20 @@
 | `Ctrl+W` | Fermer l'onglet |
 | `Ctrl+D` | Note du jour |
 | `Ctrl+Shift+H` | Recherche & remplace |
+| `Ctrl+Shift+W` | Copier pour WhatsApp |
 | `Ctrl+,` | Paramètres |
-| `Alt+1/2/3` | Mode édition / split / aperçu |
+| `Alt+1/2/3/4` | Mode édition / split / aperçu / graphe |
 
 ## Architecture
 
 - `src/` — frontend React
-  - `components/` — UI (FileTree, TabBar, CommandPalette, SettingsDialog, SnippetsDialog, BrokenLinksDialog, LibrarySwitcher, LibraryPicker, PreviewPane, MarkdownEditor…)
+  - `components/` — UI (FileTree, TabBar, CommandPalette, SettingsDialog, SnippetsDialog, BrokenLinksDialog, LibrarySwitcher, LibraryPicker, PreviewPane, MarkdownEditor, **GraphView**, **GraphControls**…)
   - `lib/` — codemirror, markdown, wikilinks, settings, snippets, editorActions
   - `types.ts` — interfaces partagées avec Rust
 - `src-tauri/` — backend Rust
-  - `lib.rs` — commandes Tauri (fs, index, rename, export, images…)
-  - `db.rs` — schéma SQLite + FTS5, reindex incrémental, backlinks, tags, broken-links
+  - `lib.rs` — commandes Tauri (fs, index, rename, export, images, **graph**, **load_demo**…)
+  - `db.rs` — schéma SQLite + FTS5, reindex incrémental, backlinks, tags, broken-links, **graph queries**
+- `demo/` — dossier de démonstration bundlé (10 notes interconnectées)
 
 ## Prérequis
 
@@ -131,7 +145,11 @@ Tables principales :
 
 ## Roadmap
 
-Voir [ROADMAP.md](./ROADMAP.md). 26/37 features faites (≈ 70 %). Restent principalement la vue graphe (Phase 4), les templates / table editor / minimap (Phase 5), et l'export PDF / site statique / front matter typé (Phase 7).
+Voir [ROADMAP.md](./ROADMAP.md). 30/37 features faites (≈ 81 %) — Phase 4 (vue graphe) livrée. Restent principalement les templates / table editor / minimap (Phase 5) et l'export PDF / site statique / front matter typé (Phase 7).
+
+## Changelog
+
+Voir [CHANGELOG.md](./CHANGELOG.md) pour l'historique détaillé des versions.
 
 ## Licence
 

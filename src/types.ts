@@ -91,3 +91,27 @@ export type RenameResult = {
   files_updated: number;
   links_updated: number;
 };
+
+// ── Graph ────────────────────────────────────────────────────────────
+
+export type GraphNode = {
+  path: string;
+  relative_path: string;
+  name: string;
+  tags: string[];
+  degree: number;
+  is_unresolved: boolean;
+};
+
+export type GraphEdge = {
+  source: string;
+  target: string;
+  kind: 'wiki' | 'md';
+};
+
+export type GraphData = {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+};
+
+export type GraphMode = 'local' | 'global';

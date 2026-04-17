@@ -2215,6 +2215,16 @@ button {
   border-bottom: 1px solid var(--line);
 }
 
+.library-search .text-input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.library-search .toolbar-button {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
 .library-body {
   flex: 1;
   min-height: 0;
@@ -2848,4 +2858,244 @@ button {
   .quick-open-backdrop {
     padding-top: 24px;
   }
+}
+
+/* ── Graph view ────────────────────────────────────────────────────── */
+
+.graph-panel {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  background: var(--canvas);
+}
+
+.graph-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.graph-controls-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+
+.graph-mode-toggle {
+  flex: 0 0 auto;
+}
+
+.graph-depth,
+.graph-folder,
+.graph-orphans {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.graph-depth input[type='range'] {
+  width: 100px;
+}
+
+.graph-depth-value {
+  font-variant-numeric: tabular-nums;
+  min-width: 1ch;
+  opacity: 0.7;
+}
+
+.graph-folder input[type='text'] {
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--canvas);
+  color: var(--text);
+  font-size: 13px;
+  width: 160px;
+}
+
+.graph-orphans {
+  cursor: pointer;
+}
+
+.graph-tags-row {
+  gap: 8px;
+}
+
+.graph-tags-label {
+  font-size: 12px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.graph-tag-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  flex: 1 1 auto;
+}
+
+.graph-tag-chip {
+  padding: 2px 8px;
+  font-size: 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--canvas);
+  color: var(--text);
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+}
+
+.graph-tag-chip:hover {
+  border-color: var(--accent);
+}
+
+.graph-tag-chip.selected {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
+.graph-tags-clear {
+  font-size: 12px;
+  color: var(--muted);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 2px 6px;
+}
+
+.graph-tags-clear:hover {
+  color: var(--text);
+  text-decoration: underline;
+}
+
+.graph-view-pane {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  overflow: hidden;
+  background: var(--canvas);
+}
+
+.graph-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  user-select: none;
+}
+
+.graph-overlay {
+  position: absolute;
+  top: 8px;
+  right: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.graph-stats {
+  font-size: 12px;
+  color: var(--muted);
+  background: var(--panel);
+  padding: 3px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--line);
+}
+
+.graph-recenter {
+  pointer-events: auto;
+  font-size: 12px;
+  padding: 3px 10px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--panel);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.graph-recenter:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.graph-tooltip {
+  position: absolute;
+  bottom: 12px;
+  left: 12px;
+  max-width: 320px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 12px;
+  color: var(--text);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  pointer-events: none;
+}
+
+.graph-tooltip-title {
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+
+.graph-tooltip-path {
+  color: var(--muted);
+  font-size: 11px;
+  margin-bottom: 4px;
+  word-break: break-all;
+}
+
+.graph-tooltip-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+}
+
+.graph-tooltip-tag {
+  font-size: 11px;
+  color: var(--accent);
+}
+
+.graph-empty,
+.graph-error {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  color: var(--muted);
+  font-size: 13px;
+  pointer-events: none;
+  text-align: center;
+  max-width: 80%;
+}
+
+.graph-error {
+  color: #c0392b;
+}
+
+/* Fullscreen graph: hide topbar + sidebar, graph takes the whole window */
+.app-shell.graph-fullscreen .topbar,
+.app-shell.graph-fullscreen .sidebar,
+.app-shell.graph-fullscreen .workspace-resizer {
+  display: none;
+}
+
+.app-shell.graph-fullscreen .workspace {
+  padding: 0;
+}
+
+.app-shell.graph-fullscreen .main-pane {
+  border: none;
+  border-radius: 0;
 }

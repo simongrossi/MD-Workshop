@@ -30,10 +30,10 @@ Vision : l'outil ultime léger du Markdown. Un Obsidian minimaliste, rapide, san
 
 ## Phase 4 — Vue Graphe
 
-- [ ] Graphe local (connexions du fichier actif, 1 niveau)
-- [ ] Graphe global (carte du workspace entier)
-- [ ] Filtrage du graphe (par tag, dossier, profondeur)
-- [ ] Navigation depuis le graphe (clic → ouvre le fichier)
+- [x] Graphe local (connexions du fichier actif, 1 niveau)
+- [x] Graphe global (carte du workspace entier)
+- [x] Filtrage du graphe (par tag, dossier, profondeur)
+- [x] Navigation depuis le graphe (clic → ouvre le fichier)
 
 ## Phase 5 — Édition avancée
 

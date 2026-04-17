@@ -10,8 +10,11 @@ type Props = {
   onToggleFavorite: (folder: string) => void;
   onRemoveRecent: (folder: string) => void;
   onChooseNewFolder: () => void;
+  onLoadDemo?: () => void;
   onClose: () => void;
 };
+
+const DEMO_HIDDEN_KEY = 'md-workshop:demo-entry-hidden';
 
 function folderLabel(path: string): string {
   return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
@@ -32,10 +35,19 @@ export function LibraryPicker({
   onToggleFavorite,
   onRemoveRecent,
   onChooseNewFolder,
+  onLoadDemo,
   onClose
 }: Props) {
   const inputRef = useRef<HTMLInputElement | null>(null);
   const [query, setQuery] = useState('');
+  const [demoHidden, setDemoHidden] = useState<boolean>(() => {
+    try { return localStorage.getItem(DEMO_HIDDEN_KEY) === '1'; } catch { return false; }
+  });
+
+  function hideDemoEntry() {
+    try { localStorage.setItem(DEMO_HIDDEN_KEY, '1'); } catch {}
+    setDemoHidden(true);
+  }
 
   useEffect(() => {
     if (!open) return;
@@ -47,10 +59,15 @@ export function LibraryPicker({
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        onClose();
+      }
     };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    // Capture-phase listener so it runs before any other component's listener
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
   }, [open, onClose]);
 
   const favSet = useMemo(() => new Set(favoriteFolders), [favoriteFolders]);
@@ -142,6 +159,12 @@ export function LibraryPicker({
             ref={inputRef}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') {
+                e.preventDefault();
+                onClose();
+              }
+            }}
             placeholder="Filtrer les bibliothèques…"
             className="text-input"
           />
@@ -151,6 +174,51 @@ export function LibraryPicker({
         </div>
 
         <div className="library-body">
+          {onLoadDemo && !demoHidden && (
+            <>
+              <h3 className="library-section-title">Découverte</h3>
+              <div className="library-list">
+                <div
+                  className="library-item library-item-demo"
+                  onClick={() => onLoadDemo()}
+                  role="button"
+                  tabIndex={0}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      onLoadDemo();
+                    }
+                  }}
+                >
+                  <span className="library-item-icon" aria-hidden="true">🎓</span>
+                  <div className="library-item-main">
+                    <div className="library-item-name">
+                      Démo MD Workshop
+                      <span className="library-item-badge">exemple</span>
+                    </div>
+                    <div className="library-item-path">
+                      10 notes liées (wiki-links, tags, graphe) — copiées dans Documents/MD-Workshop-Demo/
+                    </div>
+                  </div>
+                  <div className="library-item-actions">
+                    <button
+                      type="button"
+                      className="icon-btn"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        hideDemoEntry();
+                      }}
+                      title="Masquer cette suggestion"
+                      aria-label="Masquer cette suggestion"
+                    >
+                      ×
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </>
+          )}
+
           {filteredFavs.length > 0 && (
             <>
               <h3 className="library-section-title">Favoris</h3>
@@ -169,7 +237,7 @@ export function LibraryPicker({
             </>
           )}
 
-          {filteredFavs.length === 0 && filteredRecents.length === 0 && (
+          {filteredFavs.length === 0 && filteredRecents.length === 0 && (demoHidden || !onLoadDemo) && (
             <p className="sidebar-empty library-empty">
               {query
                 ? 'Aucune bibliothèque ne correspond.'

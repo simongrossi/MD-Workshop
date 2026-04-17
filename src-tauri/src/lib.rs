@@ -766,6 +766,90 @@ fn find_broken_links(root_path: String) -> Result<Vec<db::BrokenLink>, String> {
     db::find_broken_links(&conn, &root)
 }
 
+// Recursively copy a directory. Used by `load_demo_workspace` to materialise
+// the bundled `demo/` resources into a user-writable location on first use.
+fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
+    if !dst.exists() {
+        fs::create_dir_all(dst)?;
+    }
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        if file_type.is_dir() {
+            copy_dir_recursive(&from, &to)?;
+        } else if file_type.is_file() {
+            fs::copy(&from, &to)?;
+        }
+    }
+    Ok(())
+}
+
+/// Copy the bundled demo folder into `Documents/MD-Workshop-Demo/` if it
+/// doesn't exist yet, then return the target path. Use `reset=true` to
+/// overwrite an existing copy (handy for the "Réinitialiser la démo" command).
+#[tauri::command]
+fn load_demo_workspace(app: tauri::AppHandle, reset: Option<bool>) -> Result<String, String> {
+    let resolver = app.path();
+    let source = resolver
+        .resolve("demo", tauri::path::BaseDirectory::Resource)
+        .map_err(|e| format!("Impossible de localiser les ressources démo : {e}"))?;
+
+    if !source.exists() {
+        return Err(format!(
+            "Le dossier démo n'est pas disponible (chemin attendu : {}).",
+            source.display()
+        ));
+    }
+
+    let documents = resolver
+        .document_dir()
+        .map_err(|e| format!("Impossible de localiser le dossier Documents : {e}"))?;
+    let target = documents.join("MD-Workshop-Demo");
+
+    let should_reset = reset.unwrap_or(false);
+    if target.exists() && should_reset {
+        fs::remove_dir_all(&target)
+            .map_err(|e| format!("Impossible de réinitialiser la démo : {e}"))?;
+    }
+
+    if !target.exists() {
+        copy_dir_recursive(&source, &target)
+            .map_err(|e| format!("Impossible de copier la démo : {e}"))?;
+    }
+
+    Ok(normalize_path(&target))
+}
+
+#[tauri::command]
+fn get_graph_data(
+    root_path: String,
+    mode: String,
+    file_path: Option<String>,
+    depth: Option<u32>,
+    filter_folder: Option<String>,
+    filter_tags: Option<Vec<String>>,
+    include_orphans: Option<bool>,
+) -> Result<db::GraphData, String> {
+    let root = canonicalize_root(&root_path)?;
+    let conn = db::open_index(&root)?;
+    let tags = filter_tags.unwrap_or_default();
+    match mode.as_str() {
+        "local" => {
+            let fp = file_path.ok_or_else(|| "file_path requis pour le mode local".to_string())?;
+            db::get_graph_local(&conn, &fp, depth.unwrap_or(1))
+        }
+        "global" => db::get_graph_global(
+            &conn,
+            filter_folder.as_deref(),
+            &tags,
+            include_orphans.unwrap_or(true),
+        ),
+        other => Err(format!("Mode graphe inconnu : {other}")),
+    }
+}
+
 // ── Replace commands ─────────────────────────────────────────────────
 
 #[derive(Debug, Serialize)]
@@ -982,6 +1066,8 @@ pub fn run() {
             get_all_tags,
             get_files_by_tag,
             find_broken_links,
+            get_graph_data,
+            load_demo_workspace,
             preview_replace,
             apply_replace,
             check_first_run

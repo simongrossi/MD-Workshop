@@ -1,5 +1,6 @@
 export type Theme = 'light' | 'dark';
 export type DefaultViewMode = 'edit' | 'split' | 'preview';
+export type GraphMode = 'local' | 'global';
 
 export type AppSettings = {
   // Editor
@@ -14,6 +15,13 @@ export type AppSettings = {
 
   // View
   defaultViewMode: DefaultViewMode;
+
+  // Graph
+  graphMode: GraphMode;
+  graphDepth: number;           // 1..3
+  graphFilterFolder: string;
+  graphFilterTags: string[];
+  graphShowOrphans: boolean;
 };
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -23,7 +31,12 @@ export const DEFAULT_SETTINGS: AppSettings = {
   editorLineNumbers: true,
   editorTabSize: 2,
   theme: 'light',
-  defaultViewMode: 'split'
+  defaultViewMode: 'split',
+  graphMode: 'local',
+  graphDepth: 1,
+  graphFilterFolder: '',
+  graphFilterTags: [],
+  graphShowOrphans: true
 };
 
 const STORAGE_KEY = 'md-workshop:settings';

@@ -3,7 +3,7 @@ use regex::Regex;
 use rusqlite::{params, Connection};
 use serde::Serialize;
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
     sync::OnceLock,
@@ -916,4 +916,462 @@ pub fn get_files_by_tag(conn: &Connection, tag: &str) -> Result<Vec<FtsResult>, 
         .collect();
 
     Ok(results)
+}
+
+// ── Graph data ───────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, Clone)]
+pub struct GraphNode {
+    pub path: String,
+    pub relative_path: String,
+    pub name: String,
+    pub tags: Vec<String>,
+    pub degree: usize,
+    pub is_unresolved: bool,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct GraphEdge {
+    pub source: String,
+    pub target: String,
+    pub kind: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct GraphData {
+    pub nodes: Vec<GraphNode>,
+    pub edges: Vec<GraphEdge>,
+}
+
+struct FileRow {
+    path: String,
+    relative_path: String,
+    name: String,
+}
+
+struct Resolver {
+    by_stem: HashMap<String, String>,         // lowercase stem -> path
+    by_rel: HashMap<String, String>,          // lowercase normalized relative -> path
+    by_rel_no_ext: HashMap<String, String>,   // lowercase relative without extension -> path
+}
+
+fn load_files(conn: &Connection) -> Result<Vec<FileRow>, String> {
+    let mut stmt = conn
+        .prepare("SELECT path, relative_path, name FROM indexed_files")
+        .map_err(|e| e.to_string())?;
+    let rows: Vec<FileRow> = stmt
+        .query_map([], |row| {
+            Ok(FileRow {
+                path: row.get(0)?,
+                relative_path: row.get(1)?,
+                name: row.get(2)?,
+            })
+        })
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(rows)
+}
+
+fn build_resolver(files: &[FileRow]) -> Resolver {
+    let mut by_stem: HashMap<String, String> = HashMap::new();
+    let mut by_rel: HashMap<String, String> = HashMap::new();
+    let mut by_rel_no_ext: HashMap<String, String> = HashMap::new();
+    for f in files {
+        let stem = Path::new(&f.name)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        by_stem.entry(stem).or_insert_with(|| f.path.clone());
+
+        let rel_norm = f.relative_path.replace('\\', "/").to_ascii_lowercase();
+        by_rel.insert(rel_norm.clone(), f.path.clone());
+        if let Some((no_ext, _)) = rel_norm.rsplit_once('.') {
+            by_rel_no_ext
+                .entry(no_ext.to_string())
+                .or_insert_with(|| f.path.clone());
+        }
+    }
+    Resolver {
+        by_stem,
+        by_rel,
+        by_rel_no_ext,
+    }
+}
+
+fn resolve_wiki(target: &str, r: &Resolver) -> Option<String> {
+    let t = target.trim().to_ascii_lowercase();
+    let t_no_ext = t
+        .rsplit_once('.')
+        .map(|(s, _)| s.to_string())
+        .unwrap_or_else(|| t.clone());
+    if let Some(p) = r.by_stem.get(&t_no_ext) {
+        return Some(p.clone());
+    }
+    if let Some(p) = r.by_rel.get(&t) {
+        return Some(p.clone());
+    }
+    if let Some(p) = r.by_rel_no_ext.get(&t_no_ext) {
+        return Some(p.clone());
+    }
+    None
+}
+
+fn resolve_md(source_path: &str, href: &str, r: &Resolver) -> Option<String> {
+    if href.starts_with("http://") || href.starts_with("https://") || href.starts_with("mailto:") {
+        return None;
+    }
+    let source_dir = Path::new(source_path).parent()?;
+    let joined = source_dir.join(href);
+    if let Ok(canon) = fs::canonicalize(&joined) {
+        let norm = normalize_path(&canon);
+        // Match by relative path (case-insensitive)
+        let rel_norm = norm.replace('\\', "/").to_ascii_lowercase();
+        for (rel, path) in r.by_rel.iter() {
+            if rel_norm.ends_with(rel) {
+                return Some(path.clone());
+            }
+        }
+    }
+    // Fallback: direct lookup by href-as-relative
+    let href_norm = href.replace('\\', "/").to_ascii_lowercase();
+    if let Some(p) = r.by_rel.get(&href_norm) {
+        return Some(p.clone());
+    }
+    None
+}
+
+fn tags_map(conn: &Connection) -> Result<HashMap<String, Vec<String>>, String> {
+    let mut stmt = conn
+        .prepare("SELECT file_path, tag FROM tags")
+        .map_err(|e| e.to_string())?;
+    let mut map: HashMap<String, Vec<String>> = HashMap::new();
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|e| e.to_string())?;
+    for (path, tag) in rows.filter_map(|r| r.ok()) {
+        map.entry(path).or_default().push(tag);
+    }
+    Ok(map)
+}
+
+fn load_edges_for(
+    conn: &Connection,
+    source_path: &str,
+    r: &Resolver,
+) -> Result<Vec<(String, String, String)>, String> {
+    // Returns (source_path, target_path_or_unresolved_key, kind)
+    let mut edges: Vec<(String, String, String)> = Vec::new();
+
+    {
+        let mut stmt = conn
+            .prepare("SELECT target_name FROM wiki_links WHERE source_path = ?1")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![source_path], |row| row.get::<_, String>(0))
+            .map_err(|e| e.to_string())?;
+        for target in rows.filter_map(|r| r.ok()) {
+            let resolved = resolve_wiki(&target, r)
+                .unwrap_or_else(|| format!("__unresolved::{}", target.to_ascii_lowercase()));
+            if resolved != source_path {
+                edges.push((source_path.to_string(), resolved, "wiki".to_string()));
+            }
+        }
+    }
+
+    {
+        let mut stmt = conn
+            .prepare("SELECT target_href FROM md_links WHERE source_path = ?1")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![source_path], |row| row.get::<_, String>(0))
+            .map_err(|e| e.to_string())?;
+        for href in rows.filter_map(|r| r.ok()) {
+            if let Some(resolved) = resolve_md(source_path, &href, r) {
+                if resolved != source_path {
+                    edges.push((source_path.to_string(), resolved, "md".to_string()));
+                }
+            }
+        }
+    }
+
+    Ok(edges)
+}
+
+pub fn get_graph_global(
+    conn: &Connection,
+    filter_folder: Option<&str>,
+    filter_tags: &[String],
+    include_orphans: bool,
+) -> Result<GraphData, String> {
+    let files = load_files(conn)?;
+    let resolver = build_resolver(&files);
+    let tags = tags_map(conn)?;
+
+    // Candidate node set after filtering
+    let folder_norm = filter_folder
+        .map(|s| s.trim().replace('\\', "/"))
+        .filter(|s| !s.is_empty())
+        .map(|s| s.trim_matches('/').to_string());
+
+    let filter_tags_lower: HashSet<String> = filter_tags
+        .iter()
+        .map(|t| t.to_ascii_lowercase())
+        .collect();
+
+    let mut candidates: HashMap<String, &FileRow> = HashMap::new();
+    for f in &files {
+        if let Some(ref folder) = folder_norm {
+            let rel = f.relative_path.replace('\\', "/");
+            if !rel.starts_with(&format!("{}/", folder)) && rel != *folder {
+                continue;
+            }
+        }
+        if !filter_tags_lower.is_empty() {
+            let file_tags = tags.get(&f.path).cloned().unwrap_or_default();
+            let file_tags_lower: HashSet<String> =
+                file_tags.iter().map(|t| t.to_ascii_lowercase()).collect();
+            if !filter_tags_lower.iter().all(|t| file_tags_lower.contains(t)) {
+                continue;
+            }
+        }
+        candidates.insert(f.path.clone(), f);
+    }
+
+    // Collect edges where BOTH endpoints are candidates
+    let mut edges: Vec<GraphEdge> = Vec::new();
+    let mut degree: HashMap<String, usize> = HashMap::new();
+    let mut unresolved_targets: HashMap<String, (String, usize)> = HashMap::new();
+
+    for (_, f) in candidates.iter() {
+        let raw_edges = load_edges_for(conn, &f.path, &resolver)?;
+        for (src, tgt, kind) in raw_edges {
+            if tgt.starts_with("__unresolved::") {
+                // Only relevant for local view typically, but we can keep counts
+                let display = tgt.trim_start_matches("__unresolved::").to_string();
+                let entry = unresolved_targets
+                    .entry(tgt.clone())
+                    .or_insert_with(|| (display, 0));
+                entry.1 += 1;
+                *degree.entry(src.clone()).or_insert(0) += 1;
+                *degree.entry(tgt.clone()).or_insert(0) += 1;
+                edges.push(GraphEdge {
+                    source: src,
+                    target: tgt,
+                    kind,
+                });
+                continue;
+            }
+            if candidates.contains_key(&tgt) {
+                *degree.entry(src.clone()).or_insert(0) += 1;
+                *degree.entry(tgt.clone()).or_insert(0) += 1;
+                edges.push(GraphEdge {
+                    source: src,
+                    target: tgt,
+                    kind,
+                });
+            }
+        }
+    }
+
+    // Build nodes
+    let mut nodes: Vec<GraphNode> = Vec::new();
+    for (path, f) in candidates.iter() {
+        let d = *degree.get(path).unwrap_or(&0);
+        if !include_orphans && d == 0 {
+            continue;
+        }
+        nodes.push(GraphNode {
+            path: path.clone(),
+            relative_path: f.relative_path.clone(),
+            name: Path::new(&f.name)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or(&f.name)
+                .to_string(),
+            tags: tags.get(path).cloned().unwrap_or_default(),
+            degree: d,
+            is_unresolved: false,
+        });
+    }
+    for (key, (display, d)) in unresolved_targets.iter() {
+        nodes.push(GraphNode {
+            path: key.clone(),
+            relative_path: display.clone(),
+            name: display.clone(),
+            tags: Vec::new(),
+            degree: *d,
+            is_unresolved: true,
+        });
+    }
+
+    // Drop edges referring to nodes we didn't keep (orphans filtered)
+    let node_keys: HashSet<String> = nodes.iter().map(|n| n.path.clone()).collect();
+    edges.retain(|e| node_keys.contains(&e.source) && node_keys.contains(&e.target));
+
+    Ok(GraphData { nodes, edges })
+}
+
+pub fn get_graph_local(
+    conn: &Connection,
+    file_path: &str,
+    depth: u32,
+) -> Result<GraphData, String> {
+    let files = load_files(conn)?;
+    let resolver = build_resolver(&files);
+    let tags = tags_map(conn)?;
+    let by_path: HashMap<String, &FileRow> = files.iter().map(|f| (f.path.clone(), f)).collect();
+
+    // Verify the starting file exists
+    if !by_path.contains_key(file_path) {
+        return Ok(GraphData {
+            nodes: Vec::new(),
+            edges: Vec::new(),
+        });
+    }
+
+    // BFS
+    let mut visited: HashSet<String> = HashSet::new();
+    let mut frontier: Vec<String> = vec![file_path.to_string()];
+    visited.insert(file_path.to_string());
+
+    let mut edges: Vec<GraphEdge> = Vec::new();
+    let mut unresolved_display: HashMap<String, String> = HashMap::new();
+    let max_depth = depth.max(1);
+
+    for _ in 0..max_depth {
+        let mut next_frontier: Vec<String> = Vec::new();
+        for node in &frontier {
+            if node.starts_with("__unresolved::") {
+                continue;
+            }
+
+            // Outgoing
+            let out_edges = load_edges_for(conn, node, &resolver)?;
+            for (src, tgt, kind) in out_edges {
+                if tgt.starts_with("__unresolved::") {
+                    let display = tgt.trim_start_matches("__unresolved::").to_string();
+                    unresolved_display.insert(tgt.clone(), display);
+                }
+                edges.push(GraphEdge {
+                    source: src.clone(),
+                    target: tgt.clone(),
+                    kind,
+                });
+                if visited.insert(tgt.clone()) {
+                    next_frontier.push(tgt);
+                }
+            }
+
+            // Incoming (backlinks via wiki_links and md_links)
+            let stem = by_path
+                .get(node)
+                .map(|f| {
+                    Path::new(&f.name)
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("")
+                        .to_string()
+                })
+                .unwrap_or_default();
+
+            if !stem.is_empty() {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT DISTINCT source_path FROM wiki_links WHERE target_name = ?1 COLLATE NOCASE",
+                    )
+                    .map_err(|e| e.to_string())?;
+                let rows = stmt
+                    .query_map(params![stem], |row| row.get::<_, String>(0))
+                    .map_err(|e| e.to_string())?;
+                for src in rows.filter_map(|r| r.ok()) {
+                    if src == *node {
+                        continue;
+                    }
+                    edges.push(GraphEdge {
+                        source: src.clone(),
+                        target: node.clone(),
+                        kind: "wiki".to_string(),
+                    });
+                    if visited.insert(src.clone()) {
+                        next_frontier.push(src);
+                    }
+                }
+            }
+
+            if let Some(f) = by_path.get(node) {
+                let rel_norm = f.relative_path.replace('\\', "/");
+                let pattern = format!("%{}", rel_norm.replace('/', "%"));
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT DISTINCT source_path FROM md_links WHERE target_href LIKE ?1",
+                    )
+                    .map_err(|e| e.to_string())?;
+                let rows = stmt
+                    .query_map(params![pattern], |row| row.get::<_, String>(0))
+                    .map_err(|e| e.to_string())?;
+                for src in rows.filter_map(|r| r.ok()) {
+                    if src == *node {
+                        continue;
+                    }
+                    edges.push(GraphEdge {
+                        source: src.clone(),
+                        target: node.clone(),
+                        kind: "md".to_string(),
+                    });
+                    if visited.insert(src.clone()) {
+                        next_frontier.push(src);
+                    }
+                }
+            }
+        }
+        frontier = next_frontier;
+        if frontier.is_empty() {
+            break;
+        }
+    }
+
+    // Dedup edges
+    let mut seen_edges: HashSet<(String, String, String)> = HashSet::new();
+    edges.retain(|e| seen_edges.insert((e.source.clone(), e.target.clone(), e.kind.clone())));
+
+    // Compute degrees
+    let mut degree: HashMap<String, usize> = HashMap::new();
+    for e in &edges {
+        *degree.entry(e.source.clone()).or_insert(0) += 1;
+        *degree.entry(e.target.clone()).or_insert(0) += 1;
+    }
+
+    // Build nodes
+    let mut nodes: Vec<GraphNode> = Vec::new();
+    for key in &visited {
+        if let Some(display) = unresolved_display.get(key) {
+            nodes.push(GraphNode {
+                path: key.clone(),
+                relative_path: display.clone(),
+                name: display.clone(),
+                tags: Vec::new(),
+                degree: *degree.get(key).unwrap_or(&0),
+                is_unresolved: true,
+            });
+        } else if let Some(f) = by_path.get(key) {
+            nodes.push(GraphNode {
+                path: key.clone(),
+                relative_path: f.relative_path.clone(),
+                name: Path::new(&f.name)
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or(&f.name)
+                    .to_string(),
+                tags: tags.get(key).cloned().unwrap_or_default(),
+                degree: *degree.get(key).unwrap_or(&0),
+                is_unresolved: false,
+            });
+        }
+    }
+
+    Ok(GraphData { nodes, edges })
 }

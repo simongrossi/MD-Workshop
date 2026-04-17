@@ -6,6 +6,8 @@ import { BacklinksPanel } from './components/BacklinksPanel';
 import { BrokenLinksDialog } from './components/BrokenLinksDialog';
 import { CommandPalette, type PaletteCommand } from './components/CommandPalette';
 import { FileTree } from './components/FileTree';
+import { GraphControls } from './components/GraphControls';
+import { GraphView } from './components/GraphView';
 import { LibraryPicker } from './components/LibraryPicker';
 import { LibrarySwitcher } from './components/LibrarySwitcher';
 import { OutlinePanel } from './components/OutlinePanel';
@@ -20,6 +22,7 @@ import { TabBar } from './components/TabBar';
 import { EDITOR_FORMAT_MENU_ITEMS, type MarkdownEditorActionId } from './lib/editorActions';
 import type { EditorSettings, WikiLinkFile } from './lib/codemirror';
 import { splitFrontMatter, toggleCheckboxInSource } from './lib/markdown';
+import { markdownToWhatsApp } from './lib/whatsapp';
 import { loadSettings, saveSettings, type AppSettings } from './lib/settings';
 import { loadSnippets, saveSnippets, type Snippet } from './lib/snippets';
 import type { IndexStats, MarkdownFileEntry, OpenedDocument, RenameResult, ReplaceResult, SearchResult } from './types';
@@ -32,7 +35,8 @@ const FAVORITES_KEY = 'md-workshop:favorites';
 const RECENT_FOLDERS_KEY = 'md-workshop:recent-folders';
 const FAVORITE_FOLDERS_KEY = 'md-workshop:favorite-folders';
 
-type ViewMode = 'split' | 'edit' | 'preview';
+type ViewMode = 'split' | 'edit' | 'preview' | 'graph';
+type GraphModeState = 'local' | 'global';
 type RefreshFilesOptions = {
   reindex?: boolean;
   preserveStatus?: boolean;
@@ -60,6 +64,12 @@ export default function App() {
     const s = loadSettings();
     return s.defaultViewMode as ViewMode;
   });
+  const [graphMode, setGraphMode] = useState<GraphModeState>(() => loadSettings().graphMode);
+  const [graphDepth, setGraphDepth] = useState<number>(() => loadSettings().graphDepth);
+  const [graphFilterFolder, setGraphFilterFolder] = useState<string>(() => loadSettings().graphFilterFolder);
+  const [graphFilterTags, setGraphFilterTags] = useState<string[]>(() => loadSettings().graphFilterTags);
+  const [graphShowOrphans, setGraphShowOrphans] = useState<boolean>(() => loadSettings().graphShowOrphans);
+  const [graphFullscreen, setGraphFullscreen] = useState(false);
   const [status, setStatus] = useState('Prêt.');
   const [quickOpenOpen, setQuickOpenOpen] = useState(false);
   const [replacePanelOpen, setReplacePanelOpen] = useState(false);
@@ -113,6 +123,7 @@ export default function App() {
     deleteActiveFile: () => void;
     exportToHtml: () => void;
     copyAsHtml: () => void;
+    copyAsWhatsApp: () => void;
     openLibraryPicker: () => void;
     switchToFolder: (folder: string) => void;
     openBrokenLinks: () => void;
@@ -134,6 +145,7 @@ export default function App() {
     deleteActiveFile: () => undefined,
     exportToHtml: () => undefined,
     copyAsHtml: () => undefined,
+    copyAsWhatsApp: () => undefined,
     openLibraryPicker: () => undefined,
     switchToFolder: () => undefined,
     openBrokenLinks: () => undefined
@@ -188,6 +200,8 @@ export default function App() {
     const cmds: PaletteCommand[] = [
       { id: 'file.new', label: 'Nouveau fichier…', shortcut: 'Ctrl+N', category: 'Fichier', action: () => promptCreateFile() },
       { id: 'file.open-folder', label: 'Ouvrir un dossier…', shortcut: 'Ctrl+O', category: 'Fichier', action: () => void chooseFolder() },
+      { id: 'file.load-demo', label: 'Charger le dossier démo', category: 'Fichier', action: () => void loadDemoWorkspace(false) },
+      { id: 'file.reset-demo', label: 'Réinitialiser le dossier démo', category: 'Fichier', action: () => void loadDemoWorkspace(true) },
       { id: 'file.switch-library', label: 'Changer de bibliothèque…', shortcut: 'Ctrl+Shift+O', category: 'Fichier', action: () => setLibraryPickerOpen(true) },
       { id: 'file.save', label: 'Enregistrer', shortcut: 'Ctrl+S', category: 'Fichier', action: () => void saveFile() },
       { id: 'file.save-as', label: 'Enregistrer sous…', shortcut: 'Ctrl+Shift+S', category: 'Fichier', action: () => void saveFileAs() },
@@ -195,6 +209,7 @@ export default function App() {
       { id: 'file.delete', label: 'Supprimer le fichier…', category: 'Fichier', action: () => void deleteActiveFile() },
       { id: 'file.export-html', label: 'Exporter en HTML…', category: 'Fichier', action: () => void exportToHtml() },
       { id: 'file.copy-html', label: 'Copier en HTML', category: 'Fichier', action: () => void copyAsHtml() },
+      { id: 'file.copy-whatsapp', label: 'Copier pour WhatsApp', shortcut: 'Ctrl+Shift+W', category: 'Fichier', action: () => void copyAsWhatsApp() },
       { id: 'file.close-all', label: 'Fermer tous les onglets', category: 'Fichier', action: () => closeAllTabs() },
       { id: 'file.quick-open', label: 'Aller au fichier…', shortcut: 'Ctrl+P', category: 'Fichier', action: () => openQuickOpen() },
       { id: 'file.close-tab', label: 'Fermer l\u2019onglet', shortcut: 'Ctrl+W', category: 'Fichier', action: () => { if (activeTabPath) closeTab(activeTabPath); } },
@@ -202,6 +217,7 @@ export default function App() {
       { id: 'view.edit', label: 'Mode édition', shortcut: 'Alt+1', category: 'Affichage', action: () => setViewMode('edit') },
       { id: 'view.split', label: 'Mode split', shortcut: 'Alt+2', category: 'Affichage', action: () => setViewMode('split') },
       { id: 'view.preview', label: 'Mode aperçu', shortcut: 'Alt+3', category: 'Affichage', action: () => setViewMode('preview') },
+      { id: 'view.graph', label: 'Mode graphe', shortcut: 'Alt+4', category: 'Affichage', action: () => setViewMode('graph') },
       { id: 'tools.replace', label: 'Recherche et remplacement', shortcut: 'Ctrl+Shift+H', category: 'Outils', action: () => setReplacePanelOpen(true) },
       { id: 'tools.settings', label: 'Paramètres…', shortcut: 'Ctrl+,', category: 'Outils', action: () => setSettingsOpen(true) },
       { id: 'tools.snippets', label: 'Gérer les snippets…', category: 'Outils', action: () => setSnippetsOpen(true) },
@@ -313,6 +329,27 @@ export default function App() {
     setSettings(next);
     saveSettings(next);
   }
+
+  // Exit fullscreen automatically when leaving graph mode
+  useEffect(() => {
+    if (viewMode !== 'graph' && graphFullscreen) setGraphFullscreen(false);
+  }, [viewMode, graphFullscreen]);
+
+  // Persist graph preferences whenever they change
+  useEffect(() => {
+    setSettings((prev) => {
+      const next: AppSettings = {
+        ...prev,
+        graphMode,
+        graphDepth,
+        graphFilterFolder,
+        graphFilterTags,
+        graphShowOrphans
+      };
+      saveSettings(next);
+      return next;
+    });
+  }, [graphMode, graphDepth, graphFilterFolder, graphFilterTags, graphShowOrphans]);
 
   function updateSnippets(next: Snippet[]) {
     setSnippets(next);
@@ -638,6 +675,17 @@ ${html}
     }
   }
 
+  async function copyAsWhatsApp() {
+    if (!activeDoc) return;
+    try {
+      const text = markdownToWhatsApp(activeDoc.content);
+      await navigator.clipboard.writeText(text);
+      setStatus('Texte WhatsApp copié dans le presse-papiers.');
+    } catch (error) {
+      setStatus(`Impossible de copier : ${String(error)}`);
+    }
+  }
+
   async function saveFileAs() {
     if (!activeDoc || !rootFolder) return;
 
@@ -781,6 +829,17 @@ ${html}
     });
   }
 
+  async function loadDemoWorkspace(reset: boolean = false) {
+    try {
+      setStatus('Préparation de la démo…');
+      const path = await invoke<string>('load_demo_workspace', { reset });
+      await switchToFolder(path);
+      setStatus(reset ? 'Démo réinitialisée.' : 'Démo chargée.');
+    } catch (error) {
+      setStatus(`Impossible de charger la démo : ${String(error)}`);
+    }
+  }
+
   async function switchToFolder(folder: string) {
     if (folder === rootFolder) return;
     if (anyTabDirty) {
@@ -836,6 +895,7 @@ ${html}
     deleteActiveFile: () => void deleteActiveFile(),
     exportToHtml: () => void exportToHtml(),
     copyAsHtml: () => void copyAsHtml(),
+    copyAsWhatsApp: () => void copyAsWhatsApp(),
     openLibraryPicker: () => setLibraryPickerOpen(true),
     switchToFolder: (folder: string) => void switchToFolder(folder),
     openBrokenLinks: () => setBrokenLinksOpen(true)
@@ -845,6 +905,21 @@ ${html}
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      // Alt+1..4 view mode shortcuts (web fallback; Tauri also has native menu)
+      if (event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey) {
+        if (event.key === '1') { event.preventDefault(); setViewMode('edit'); return; }
+        if (event.key === '2') { event.preventDefault(); setViewMode('split'); return; }
+        if (event.key === '3') { event.preventDefault(); setViewMode('preview'); return; }
+        if (event.key === '4') { event.preventDefault(); setViewMode('graph'); return; }
+      }
+
+      // Esc exits graph fullscreen
+      if (event.key === 'Escape' && graphFullscreen) {
+        event.preventDefault();
+        setGraphFullscreen(false);
+        return;
+      }
+
       const modifier = event.ctrlKey || event.metaKey;
       if (!modifier) return;
 
@@ -863,6 +938,9 @@ ${html}
       } else if (key === 'h' && event.shiftKey) {
         event.preventDefault();
         setReplacePanelOpen(true);
+      } else if (key === 'w' && event.shiftKey) {
+        event.preventDefault();
+        void copyAsWhatsApp();
       } else if (key === 'o') {
         event.preventDefault();
         void chooseFolder();
@@ -889,7 +967,7 @@ ${html}
 
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [files.length, rootFolder, openTabs, activeTabPath]);
+  }, [files.length, rootFolder, openTabs, activeTabPath, graphFullscreen]);
 
   // ── Native app menu ────────────────────────────────────────────────
 
@@ -925,6 +1003,12 @@ ${html}
               id: 'file.export.copy-html',
               text: 'Copier en HTML',
               action: () => menuActionsRef.current.copyAsHtml()
+            },
+            {
+              id: 'file.export.copy-whatsapp',
+              text: 'Copier pour WhatsApp',
+              accelerator: 'Ctrl+Shift+W',
+              action: () => menuActionsRef.current.copyAsWhatsApp()
             }
           ]
         });
@@ -1093,6 +1177,12 @@ ${html}
               text: 'Mode aperçu',
               accelerator: 'Alt+3',
               action: () => menuActionsRef.current.setViewMode('preview')
+            },
+            {
+              id: 'view.graph',
+              text: 'Mode graphe',
+              accelerator: 'Alt+4',
+              action: () => menuActionsRef.current.setViewMode('graph')
             }
           ]
         });
@@ -1201,7 +1291,7 @@ ${html}
   const showPreview = viewMode === 'split' || viewMode === 'preview';
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell${graphFullscreen && viewMode === 'graph' ? ' graph-fullscreen' : ''}`}>
       <header className="topbar">
         <div className="brand">
           <span className="brand-mark" aria-hidden="true" />
@@ -1221,7 +1311,7 @@ ${html}
           <button className="toolbar-button" onClick={openQuickOpen}>
             Aller au fichier
           </button>
-          {activeDoc && (
+          {activeDoc && viewMode !== 'graph' && (
             <div className="segmented-control">
               <button className={viewMode === 'edit' ? 'active' : ''} onClick={() => setViewMode('edit')}>
                 Édition
@@ -1233,6 +1323,15 @@ ${html}
                 Aperçu
               </button>
             </div>
+          )}
+          {rootFolder && (
+            <button
+              className={`toolbar-button ${viewMode === 'graph' ? 'accent' : ''}`}
+              onClick={() => setViewMode(viewMode === 'graph' ? (activeDoc ? 'split' : 'edit') : 'graph')}
+              title="Mode graphe (Alt+4)"
+            >
+              {viewMode === 'graph' ? '← Retour' : 'Graphe'}
+            </button>
           )}
         </div>
       </header>
@@ -1299,7 +1398,40 @@ ${html}
         />
 
         <section className="main-pane">
-          {activeDoc ? (
+          {viewMode === 'graph' && rootFolder ? (
+            <div className="graph-panel">
+              <GraphControls
+                rootFolder={rootFolder}
+                files={files}
+                mode={graphMode}
+                depth={graphDepth}
+                filterFolder={graphFilterFolder}
+                filterTags={graphFilterTags}
+                showOrphans={graphShowOrphans}
+                onModeChange={setGraphMode}
+                onDepthChange={setGraphDepth}
+                onFilterFolderChange={setGraphFilterFolder}
+                onFilterTagsChange={setGraphFilterTags}
+                onShowOrphansChange={setGraphShowOrphans}
+              />
+              <GraphView
+                rootFolder={rootFolder}
+                activeFilePath={activeDoc?.path ?? null}
+                mode={graphMode}
+                depth={graphDepth}
+                filterFolder={graphFilterFolder}
+                filterTags={graphFilterTags}
+                showOrphans={graphShowOrphans}
+                fullscreen={graphFullscreen}
+                onToggleFullscreen={() => setGraphFullscreen((v) => !v)}
+                onNavigate={(path) => void openFile(path)}
+                onOpenInEditor={(path) => {
+                  void openFile(path);
+                  setViewMode('split');
+                }}
+              />
+            </div>
+          ) : activeDoc ? (
             <div className="document-panel">
               <TabBar
                 tabs={openTabs}
@@ -1381,6 +1513,15 @@ ${html}
                 <button className="toolbar-button accent" onClick={() => void chooseFolder()}>
                   Ouvrir un dossier
                 </button>
+                {!rootFolder && (
+                  <button
+                    className="toolbar-button"
+                    onClick={() => void loadDemoWorkspace(false)}
+                    title="Copie le dossier démo dans Documents/MD-Workshop-Demo/ et l'ouvre"
+                  >
+                    Charger la démo
+                  </button>
+                )}
                 {rootFolder && files.length > 0 && (
                   <button className="toolbar-button" onClick={openQuickOpen}>
                     Aller au fichier
@@ -1445,6 +1586,10 @@ ${html}
         onChooseNewFolder={() => {
           setLibraryPickerOpen(false);
           void chooseFolder();
+        }}
+        onLoadDemo={() => {
+          setLibraryPickerOpen(false);
+          void loadDemoWorkspace(false);
         }}
         onClose={() => setLibraryPickerOpen(false)}
       />
