@@ -1,0 +1,52 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "MD Workshop",
+  "version": "0.1.0",
+  "identifier": "com.simongrossi.mdworkshop",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build",
+    "devUrl": "http://127.0.0.1:1420",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "MD Workshop",
+        "width": 1440,
+        "height": 960,
+        "resizable": true,
+        "fullscreen": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' data: blob: asset: http://asset.localhost https://asset.localhost; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost ws://127.0.0.1:1421 ws://localhost:1421 http://127.0.0.1:1420 http://localhost:1420; font-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'",
+      "capabilities": ["main-capability"],
+      "assetProtocol": {
+        "enable": true,
+        "scope": []
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.ico",
+      "icons/icon.icns",
+      "icons/Square30x30Logo.png",
+      "icons/Square44x44Logo.png",
+      "icons/Square71x71Logo.png",
+      "icons/Square89x89Logo.png",
+      "icons/Square107x107Logo.png",
+      "icons/Square142x142Logo.png",
+      "icons/Square150x150Logo.png",
+      "icons/Square284x284Logo.png",
+      "icons/Square310x310Logo.png",
+      "icons/StoreLogo.png"
+    ]
+  }
+}

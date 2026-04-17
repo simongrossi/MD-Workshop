@@ -1,0 +1,1 @@
+{"main-capability":{"identifier":"main-capability","description":"Main desktop capability for MD Workshop.","local":true,"windows":["main"],"permissions":["core:default","dialog:default"]}}

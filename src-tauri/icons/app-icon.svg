@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title">
+  <title>MD Workshop</title>
+  <rect width="512" height="512" rx="112" fill="#f6f5f1"/>
+  <rect x="92" y="84" width="328" height="344" rx="52" fill="#ffffff" stroke="#ddd8cf" stroke-width="20"/>
+  <path d="M154 172h64l38 97 39-97h63v168h-49V244l-31 82h-43l-31-82v96h-50z" fill="#1f2933"/>
+  <path d="M156 370h200" stroke="#0d9a87" stroke-width="22" stroke-linecap="round"/>
+</svg>

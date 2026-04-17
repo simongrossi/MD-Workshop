@@ -1,0 +1,42 @@
+{
+  "name": "md-workshop",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Éditeur Markdown desktop léger inspiré de SmoothCSV, basé sur Tauri et CodeMirror",
+  "author": "Simon Grossi",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@codemirror/autocomplete": "^6.20.1",
+    "@codemirror/commands": "^6.8.1",
+    "@codemirror/lang-markdown": "^6.3.4",
+    "@codemirror/language": "^6.11.3",
+    "@codemirror/search": "^6.5.11",
+    "@codemirror/state": "^6.5.2",
+    "@codemirror/view": "^6.38.6",
+    "@tauri-apps/api": "^2.8.0",
+    "@tauri-apps/plugin-dialog": "^2.4.0",
+    "clsx": "^2.1.1",
+    "dompurify": "^3.2.6",
+    "js-yaml": "^4.1.0",
+    "marked": "^16.4.1",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.8.0",
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^24.3.0",
+    "@types/react": "^19.1.10",
+    "@types/react-dom": "^19.1.7",
+    "@vitejs/plugin-react": "^5.0.0",
+    "typescript": "~5.9.2",
+    "vite": "^7.1.3"
+  }
+}
