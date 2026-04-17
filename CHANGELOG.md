@@ -3,7 +3,7 @@
 Toutes les évolutions notables du projet sont listées ici.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et le projet applique [SemVer](https://semver.org/lang/fr/).
 
-## [Non publié]
+## [0.2.0] — 2026-04-17
 
 ### Ajouté — Phase 4 : Vue Graphe
 
