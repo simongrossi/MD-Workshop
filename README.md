@@ -2,6 +2,8 @@
 
 Éditeur Markdown desktop léger, pensé comme un *Obsidian minimaliste* — rapide, sans bloat, orienté productivité. Inspiré par l'esprit de SmoothCSV, mais pour les fichiers `.md`.
 
+![MD Workshop — vue graphe](https://i.imgur.com/w3Txbkq.jpeg)
+
 ## Stack
 
 - **Tauri 2.8** — fenêtre native + backend Rust
