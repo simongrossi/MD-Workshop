@@ -64,8 +64,63 @@ pub struct FtsResult {
 
 // ── Database connection ──────────────────────────────────────────────
 
+/// Base directory for all workspace indexes, resolved once at app startup
+/// via `app.path().app_data_dir()`. Every workspace gets its own
+/// `<digest>/index.db` subdirectory below this base.
+static INDEX_BASE: OnceLock<PathBuf> = OnceLock::new();
+
+/// Initialise the global index base directory. Must be called once at setup,
+/// before the first Tauri command tries to open a connection.
+pub fn init_index_base(base: PathBuf) -> Result<(), String> {
+    INDEX_BASE
+        .set(base)
+        .map_err(|_| "Index base déjà initialisée.".to_string())
+}
+
+/// Short, stable, per-workspace identifier derived from the canonical root
+/// path. A non-crypto hash is enough here — we only need to avoid collisions
+/// between workspaces on the same machine, not resist adversarial input.
+fn workspace_digest(root: &Path) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    crate::normalize_path(root).to_ascii_lowercase().hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+}
+
 fn db_dir(root: &Path) -> PathBuf {
-    root.join(".md-workshop")
+    let base = INDEX_BASE
+        .get()
+        .expect("INDEX_BASE non initialisée — vérifier le setup hook Tauri.");
+    base.join(workspace_digest(root))
+}
+
+/// Record the workspace ↔ digest mapping in a best-effort `registry.json`
+/// stored alongside the per-workspace index directories. Used to diagnose
+/// "which folder maps to this hash" and, later, to clean up orphan indexes
+/// from Settings. Silent on any I/O error — the registry is auxiliary data.
+fn update_registry(root: &Path) {
+    let Some(base) = INDEX_BASE.get() else {
+        return;
+    };
+    let registry_path = base.join("registry.json");
+    let digest = workspace_digest(root);
+    let canonical = crate::normalize_path(root);
+
+    let mut map: HashMap<String, String> = fs::read_to_string(&registry_path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+
+    // Skip the write if the entry is already correct — avoids unnecessary
+    // disk churn when repeatedly opening the same workspace.
+    if map.get(&digest).map(|s| s.as_str()) == Some(canonical.as_str()) {
+        return;
+    }
+    map.insert(digest, canonical);
+
+    if let Ok(serialized) = serde_json::to_string_pretty(&map) {
+        let _ = fs::write(&registry_path, serialized);
+    }
 }
 
 /// Process-wide pool of SQLite connections keyed by canonical root path.
@@ -97,6 +152,7 @@ pub fn get_connection(root: &Path) -> Result<ConnHandle, String> {
     let conn = open_index(root)?;
     let arc = Arc::new(Mutex::new(conn));
     map.insert(key, Arc::clone(&arc));
+    update_registry(root);
     Ok(ConnHandle(arc))
 }
 

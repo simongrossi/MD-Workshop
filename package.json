@@ -1,7 +1,7 @@
 {
   "name": "md-workshop",
   "private": true,
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Éditeur Markdown desktop léger inspiré de SmoothCSV, basé sur Tauri et CodeMirror",
   "author": "Simon Grossi",
   "license": "MIT",

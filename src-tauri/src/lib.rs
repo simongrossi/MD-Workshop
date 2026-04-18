@@ -272,11 +272,6 @@ fn handle_watch_events(
     let mut changed_md: Vec<PathBuf> = Vec::new();
 
     for ev in events {
-        // Ignore our own index directory (SQLite WAL churn would otherwise
-        // drive a feedback loop).
-        if ev.path.components().any(|c| c.as_os_str() == ".md-workshop") {
-            continue;
-        }
         invalidate_lists = true;
         if is_markdown(&ev.path) {
             changed_md.push(ev.path);
@@ -365,12 +360,29 @@ fn set_workspace_asset_scope(
     *current_root = Some(root.clone());
     drop(current_root);
 
+    // v0.4.x and earlier stored the SQLite index in `<workspace>/.md-workshop/`.
+    // From v0.5.0 it lives under the per-user app-data directory instead, so
+    // any legacy folder still sitting inside a workspace is pure garbage —
+    // remove it silently on open. The new index will be rebuilt on first use.
+    cleanup_legacy_index(&root);
+
     // Start (or swap) the file-system watcher for this workspace so external
     // edits stay reflected in our caches and SQLite index.
     if let Err(e) = start_watching(app.clone(), root) {
         eprintln!("md-workshop: watcher init failed: {e}");
     }
     Ok(())
+}
+
+/// Remove any leftover `.md-workshop/` directory that older versions created
+/// at the root of the workspace. Best-effort: never aborts the caller.
+fn cleanup_legacy_index(root: &Path) {
+    let legacy = root.join(".md-workshop");
+    if legacy.is_dir() {
+        if let Err(e) = fs::remove_dir_all(&legacy) {
+            eprintln!("md-workshop: nettoyage legacy {legacy:?} échoué : {e}");
+        }
+    }
 }
 
 fn has_markdown_extension(path: &str) -> bool {
@@ -1517,6 +1529,21 @@ pub fn run() {
             let _main_window = app
                 .get_webview_window("main")
                 .context("main window not found")?;
+
+            // Resolve the per-user app-data directory once and hand it to the
+            // db module. All workspace indexes now live under
+            // `<app_data_dir>/workspaces/<digest>/index.db`, so nothing is
+            // ever written inside the workspace itself.
+            let base = app
+                .path()
+                .app_data_dir()
+                .context("app_data_dir introuvable")?
+                .join("workspaces");
+            std::fs::create_dir_all(&base)
+                .with_context(|| format!("Impossible de créer {base:?}"))?;
+            db::init_index_base(base)
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+
             Ok(())
         })
         .run(tauri::generate_context!())

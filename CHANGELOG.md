@@ -3,6 +3,39 @@
 Toutes les évolutions notables du projet sont listées ici.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et le projet applique [SemVer](https://semver.org/lang/fr/).
 
+## [0.5.0] — 2026-04-18
+
+### Changé — Stockage de l'index SQLite
+
+- **Fini le dossier `.md-workshop/` à la racine des workspaces**. L'index FTS5 (recherche plein texte, backlinks, tags, wiki-links) est désormais stocké dans le répertoire app-data spécifique à l'utilisateur, pas dans le workspace.
+  - **Windows** : `%APPDATA%\com.simongrossi.mdworkshop\workspaces\<digest>\index.db`
+  - **macOS** : `~/Library/Application Support/com.simongrossi.mdworkshop/workspaces/<digest>/index.db`
+  - **Linux** : `~/.local/share/com.simongrossi.mdworkshop/workspaces/<digest>/index.db`
+  - `<digest>` est un hash court (16 hex) du chemin canonique du workspace.
+- **Plus de pollution** des dossiers ouverts : plus rien à `.gitignore`, plus de risque de commit accidentel.
+- **Sécurité de premier ouverture** : si tu as remonté d'un cran dans le file picker par inadvertance (ouvrant par ex. `D:\Programmation\` au lieu de `D:\Programmation\mes-notes\`), l'app ne pollue plus ce dossier — l'index part ailleurs.
+- **Registry debug** (`workspaces/registry.json`) : mapping `digest → chemin canonique` mis à jour à chaque ouverture, utile pour futur ménage d'orphelins.
+
+### Ajouté — Nettoyage automatique du legacy
+
+- À la première ouverture d'un workspace en v0.5.0, tout dossier `.md-workshop/` trouvé à la racine est **supprimé silencieusement**. L'index est reconstruit dans le nouvel emplacement en quelques secondes (reindex incrémental déclenché automatiquement à la première commande).
+- Opération best-effort : si la suppression échoue (permissions, fichier ouvert ailleurs), l'app continue sans bloquer — un message est écrit sur `stderr`.
+
+### Technique
+
+- Nouveau `db::init_index_base(PathBuf)` appelé dans le `setup` hook de Tauri. Tente `app.path().app_data_dir()` puis `fs::create_dir_all` pour garantir que le répertoire existe avant toute ouverture de connexion.
+- Nouveau helper `workspace_digest(&Path)` (hash non-crypto `DefaultHasher` — collisions négligeables sur un set personnel).
+- `db_dir(&Path)` passe de `root.join(".md-workshop")` à `INDEX_BASE.get().join(digest)`.
+- Le filtre `if ev.path.components().any(|c| c.as_os_str() == ".md-workshop")` dans le file watcher est supprimé — plus nécessaire et évite un faux filtre si un utilisateur a légitimement un dossier nommé `.md-workshop` dans son contenu.
+- Aucune nouvelle dépendance.
+
+### Impact utilisateur
+
+- **Rien à faire** si tu mets à jour depuis v0.4.0 : au prochain ouvrage d'un workspace, l'ancien `.md-workshop/` disparaît, le nouvel index se construit ailleurs. Un petit reindex au premier open, puis tout redevient normal.
+- Tous les workflows (recherche, backlinks, tags, graph view) restent identiques.
+
+---
+
 ## [0.4.0] — 2026-04-18
 
 Version dédiée à la **performance, la stabilité et la gestion mémoire**. Aucune
