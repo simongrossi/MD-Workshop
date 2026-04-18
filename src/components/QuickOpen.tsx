@@ -31,12 +31,21 @@ export function QuickOpen({ open, files, onOpenFile, onClose }: Props) {
   const matches = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
 
-    return files
-      .map((file) => ({ file, score: scoreFile(file, normalizedQuery) }))
-      .filter(({ score }) => score < 99)
-      .sort((a, b) => a.score - b.score || a.file.relative_path.localeCompare(b.file.relative_path))
-      .slice(0, 14)
-      .map(({ file }) => file);
+    // Single-pass collect of scored candidates, then one sort + slice.
+    // Avoids five array walks (map → filter → sort → slice → map) when we
+    // only render 14 items at the end.
+    const scored: { file: MarkdownFileEntry; score: number }[] = [];
+    for (const file of files) {
+      const score = scoreFile(file, normalizedQuery);
+      if (score < 99) scored.push({ file, score });
+    }
+    scored.sort(
+      (a, b) => a.score - b.score || a.file.relative_path.localeCompare(b.file.relative_path)
+    );
+    const limit = Math.min(14, scored.length);
+    const out: MarkdownFileEntry[] = new Array(limit);
+    for (let i = 0; i < limit; i++) out[i] = scored[i].file;
+    return out;
   }, [files, query]);
 
   useEffect(() => {

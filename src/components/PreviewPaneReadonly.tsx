@@ -1,4 +1,4 @@
-import { useMemo, type MouseEvent as ReactMouseEvent } from 'react';
+import { useEffect, useMemo, useState, type MouseEvent as ReactMouseEvent } from 'react';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { splitFrontMatter } from '../lib/markdown';
 import { resolveRelativeLink, resolveWikiLink, WIKILINK_REGEX } from '../lib/wikilinks';
@@ -61,7 +61,18 @@ function resolvePreviewImagePath(src: string, activeFilePath: string, rootFolder
 }
 
 export function PreviewPaneReadonly({ content, files, activeFilePath, rootFolder, onNavigate, onCreateFile, onToggleCheckbox }: Props) {
-  const { html: rawHtml, frontMatter, frontMatterError, rawFrontMatter } = splitFrontMatter(content);
+  // Debounce the source so we don't re-run marked.parse + wiki-link scanning
+  // on every keystroke. 120ms keeps the preview feeling live without jank.
+  const [debouncedContent, setDebouncedContent] = useState(content);
+  useEffect(() => {
+    const id = window.setTimeout(() => setDebouncedContent(content), 120);
+    return () => window.clearTimeout(id);
+  }, [content]);
+
+  const { html: rawHtml, frontMatter, frontMatterError, rawFrontMatter } = useMemo(
+    () => splitFrontMatter(debouncedContent),
+    [debouncedContent]
+  );
   const frontMatterEntries = Object.entries(frontMatter ?? {});
 
   const html = useMemo(() => {
@@ -70,7 +81,7 @@ export function PreviewPaneReadonly({ content, files, activeFilePath, rootFolder
     const unresolvedNames = new Set<string>();
     const wlRegex = new RegExp(WIKILINK_REGEX.source, 'g');
     let m: RegExpExecArray | null;
-    while ((m = wlRegex.exec(content)) !== null) {
+    while ((m = wlRegex.exec(debouncedContent)) !== null) {
       const target = m[1].trim();
       if (!resolveWikiLink(target, files)) {
         unresolvedNames.add(target.toLowerCase());
@@ -104,7 +115,7 @@ export function PreviewPaneReadonly({ content, files, activeFilePath, rootFolder
     }
 
     return out;
-  }, [rawHtml, content, files, activeFilePath, rootFolder]);
+  }, [rawHtml, debouncedContent, files, activeFilePath, rootFolder]);
 
   function handleClick(event: ReactMouseEvent<HTMLElement>) {
     const target = event.target as HTMLElement;

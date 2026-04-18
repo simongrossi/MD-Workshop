@@ -29,6 +29,12 @@ type Props = {
 type SimNode = GraphNode & SimulationNodeDatum;
 type SimLink = SimulationLinkDatum<SimNode> & { kind: 'wiki' | 'md' };
 
+// Hard cap on rendered nodes. Beyond this, the force simulation's quadratic
+// forceCollide + per-tick canvas redraw tanks FPS. When exceeded we keep the
+// most-connected nodes (highest degree) so the backbone of the graph stays
+// visible and we stay interactive.
+const MAX_NODES = 500;
+
 function readCssVar(name: string): string {
   const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
   return v || '#666';
@@ -58,6 +64,17 @@ export function GraphView({
   const panStartRef = useRef<{ x: number; y: number; tx: number; ty: number } | null>(null);
   const mouseDownPosRef = useRef<{ px: number; py: number } | null>(null);
   const didDragRef = useRef(false);
+  const colorsRef = useRef({ accent: '#666', text: '#666', muted: '#666', line: '#666', canvasBg: '#666' });
+
+  function refreshColors() {
+    colorsRef.current = {
+      accent: readCssVar('--accent'),
+      text: readCssVar('--text'),
+      muted: readCssVar('--muted'),
+      line: readCssVar('--line'),
+      canvasBg: readCssVar('--canvas')
+    };
+  }
 
   const [data, setData] = useState<GraphData | null>(null);
   const [loading, setLoading] = useState(false);
@@ -126,7 +143,11 @@ export function GraphView({
 
     // Preserve positions for existing nodes so the view doesn't jump on refresh
     const prev = new Map(nodesRef.current.map((n) => [n.path, n]));
-    const nodes: SimNode[] = data.nodes.map((n) => {
+    const sourceNodes =
+      data.nodes.length > MAX_NODES
+        ? [...data.nodes].sort((a, b) => (b.degree || 0) - (a.degree || 0)).slice(0, MAX_NODES)
+        : data.nodes;
+    const nodes: SimNode[] = sourceNodes.map((n) => {
       const old = prev.get(n.path);
       return {
         ...n,
@@ -175,7 +196,11 @@ export function GraphView({
 
   // Observe theme changes to redraw with new colors
   useEffect(() => {
-    const obs = new MutationObserver(() => draw());
+    refreshColors();
+    const obs = new MutationObserver(() => {
+      refreshColors();
+      draw();
+    });
     obs.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
     return () => obs.disconnect();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -233,17 +258,19 @@ export function GraphView({
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, width, height);
 
-    const accent = readCssVar('--accent');
-    const text = readCssVar('--text');
-    const muted = readCssVar('--muted');
-    const line = readCssVar('--line');
-    const canvasBg = readCssVar('--canvas');
-    void canvasBg;
+    const { accent, text, muted, line } = colorsRef.current;
 
     const { x: tx, y: ty, k } = transformRef.current;
     ctx.save();
     ctx.translate(tx, ty);
     ctx.scale(k, k);
+
+    // Viewport in world coordinates (used to cull off-screen items).
+    const cullMargin = 40;
+    const viewLeft = -tx / k - cullMargin;
+    const viewTop = -ty / k - cullMargin;
+    const viewRight = (width - tx) / k + cullMargin;
+    const viewBottom = (height - ty) / k + cullMargin;
 
     // Edges
     ctx.lineWidth = 1;
@@ -252,6 +279,12 @@ export function GraphView({
       const s = l.source as SimNode;
       const t = l.target as SimNode;
       if (s.x == null || s.y == null || t.x == null || t.y == null) continue;
+      // Skip edges whose bounding box is fully outside the viewport.
+      const minX = Math.min(s.x, t.x);
+      const maxX = Math.max(s.x, t.x);
+      const minY = Math.min(s.y, t.y);
+      const maxY = Math.max(s.y, t.y);
+      if (maxX < viewLeft || minX > viewRight || maxY < viewTop || minY > viewBottom) continue;
       ctx.beginPath();
       ctx.moveTo(s.x, s.y);
       ctx.lineTo(t.x, t.y);
@@ -268,6 +301,9 @@ export function GraphView({
     for (const n of nodesRef.current) {
       if (n.x == null || n.y == null) continue;
       const r = nodeRadius(n);
+      if (n.x + r < viewLeft || n.x - r > viewRight || n.y + r < viewTop || n.y - r > viewBottom) {
+        continue;
+      }
       const isActive = !n.is_unresolved && n.path === activeFilePath;
       const isHover = hoverRef.current?.path === n.path;
 

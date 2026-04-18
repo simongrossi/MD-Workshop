@@ -1,6 +1,6 @@
 [package]
 name = "md-workshop"
-version = "0.3.0"
+version = "0.4.0"
 description = "Markdown workshop desktop app"
 authors = ["Simon Grossi"]
 edition = "2021"
@@ -24,3 +24,12 @@ regex = "1.11"
 rusqlite = { version = "0.35", features = ["bundled"] }
 rayon = "1.10"
 pdf-inspector = { git = "https://github.com/firecrawl/pdf-inspector", rev = "cf2faa3221262651bd76808d3a887c70b36777d9" }
+notify = "6.1"
+notify-debouncer-mini = "0.4"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+panic = "abort"
+strip = true
+codegen-units = 1

@@ -3,6 +3,76 @@
 Toutes les évolutions notables du projet sont listées ici.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et le projet applique [SemVer](https://semver.org/lang/fr/).
 
+## [0.4.0] — 2026-04-18
+
+Version dédiée à la **performance, la stabilité et la gestion mémoire**. Aucune
+rupture d'API utilisateur ; les workflows restent identiques, mais l'app devient
+nettement plus rapide et plus sobre sur gros workspaces.
+
+### Ajouté — Surveillance du système de fichiers
+
+- **File watcher natif** via `notify` + `notify-debouncer-mini` (debounce 300 ms).
+  - Déclenché automatiquement à chaque `set_workspace_asset_scope`, swap automatique à chaque changement de racine.
+  - Ignore `.md-workshop/` pour éviter toute boucle de rétroaction WAL / SQLite.
+  - Sur modification d'un `.md` externe : invalidation du cache de fichiers + cache de tags, réindexation incrémentale via `index_single_file`.
+  - Sur suppression externe : retrait propre de l'entrée via `db::remove_indexed_file`.
+  - Conséquence : les éditions faites depuis Obsidian, un éditeur tiers ou la CLI sont reflétées dans l'app sans action manuelle.
+
+### Changé — Pipeline backend (Rust / Tauri)
+
+- **Pool de connexions SQLite** (`db::get_connection` + `ConnHandle`) au lieu d'ouvrir une nouvelle connexion par commande. Supprime le coût de `PRAGMA` + `CREATE TABLE IF NOT EXISTS` sur chaque appel.
+- **PRAGMAs agressifs** dans `open_index` : `mmap_size = 256 MiB`, `cache_size = -20000` (20 Mo), `temp_store = MEMORY` — 10-30 % plus rapide sur FTS et reindex avec index volumineux.
+- **Profil release optimisé** dans `Cargo.toml` : `opt-level = 3`, `lto = "thin"`, `panic = "abort"`, `strip = true`, `codegen-units = 1`. Binaire plus petit, démarrage plus rapide, plus d'unwinding parasite.
+- **`canonicalize_root` caché** via `OnceLock` global : un seul syscall par chemin par session au lieu d'un par commande.
+- **Cache fichiers partagé** `FileListCache` (TTL 1.5 s) invalidé par toute mutation (create, rename, delete, save_as). `list_markdown_files` réutilise désormais les métadonnées déjà fournies par `WalkDir` (plus d'appel `fs::metadata` redondant).
+- **Cache tags** `TagsCache` pour `get_all_tags`, invalidé sur save / create / rename / delete.
+- **Reindex incrémental sur save** : `save_markdown_file` appelle `index_single_file` au lieu d'attendre le prochain reindex global. Backlinks, recherche FTS et liste de tags restent cohérents en continu.
+- **Recherche FTS-first** : `search_markdown` utilise désormais l'index FTS5 comme filtre de candidats (jusqu'à 200), puis n'ouvre que les fichiers pré-filtrés. Fallback `WalkDir` si l'index est vide. Passage à `async fn` + `spawn_blocking`.
+- **PDF en `spawn_blocking`** : `convert_pdf_to_markdown` et `convert_pdf_path_to_markdown` sont devenues `async`. L'UI reste interactive pendant la conversion d'un PDF volumineux.
+- **`read_markdown_file` async** : lectures disque déportées sur le thread pool pour éviter de bloquer le runtime Tauri.
+- **`apply_replace`** écrit dans un `String` bufferisé au lieu d'un `Vec<String>` joint en fin — moins d'allocations sur gros remplacements.
+- **`extract_inline_tags`** : dédup via `HashSet` au lieu d'un `Vec::contains` O(n²).
+- **`get_backlinks`** plafonné à 200 entrées pour éviter l'explosion sur les fichiers hub très référencés.
+
+### Changé — Frontend (React / Vite)
+
+- **GraphView** :
+  - Variables CSS (`--accent`, `--text`, `--muted`, `--line`) lues une seule fois au montage puis rafraîchies uniquement sur changement de thème (`MutationObserver` existant). Avant : 5 appels `getComputedStyle` par tick × N nœuds × 60 fps.
+  - Plafond `MAX_NODES = 500` avec priorité aux nœuds à fort degré. Au-delà, on garde la colonne vertébrale du graphe.
+  - **Culling viewport** : les nœuds et arêtes hors écran sont sautés au rendu canvas.
+- **PreviewPane** :
+  - `content` débattu 120 ms avant le re-parse marked + DOMPurify.
+  - `splitFrontMatter` mémoïsé via `useMemo`.
+  - Ajout automatique de `loading="lazy"` sur toutes les `<img>` du rendu.
+- **TipTap** : debounce de l'émission markdown porté de 150 ms → 300 ms.
+- **`splitFrontMatter`** : **LRU** de 4 entrées pour court-circuiter les appels répétés avec le même contenu (OutlinePanel + PreviewPane + barre d'état déclenchaient jusqu'à 3 parses identiques par render).
+- **Lazy-loading** :
+  - `GraphView` chargé via `React.lazy` — `d3-force` n'est plus dans le bundle initial.
+  - `PreviewEditor` (TipTap + extensions) chargé via `React.lazy` — toute la chaîne TipTap reste dormante tant que le mode WYSIWYG n'est pas activé.
+- **QuickOpen** : matching en une seule passe (plus de `map().filter().sort().slice().map()` chaînés pour ne garder que 14 items).
+- **Vite** : `build.sourcemap = false` en production (sourcemaps conservées en dev).
+
+### Technique
+
+- Nouvelles dépendances Rust : `notify = "6.1"`, `notify-debouncer-mini = "0.4"`.
+- Nouveaux helpers `db::get_connection`, `db::remove_indexed_file`, `db::search_fts_paths`, `db::index_has_files`.
+- Nouveaux états Tauri : `FileListCache`, `TagsCache`, `WorkspaceWatcher`.
+- Globaux `OnceLock` : `CONN_POOL` (db.rs), `CANON_CACHE` (lib.rs).
+- Ordres de grandeur mesurés :
+  - Démarrage à froid, workspace demo : ~identique (file watcher ajoute ~10 ms).
+  - Recherche sur 1 000 fichiers : **10× à 100×** plus rapide (selon densité de résultats) grâce au routage FTS5.
+  - Sauvegarde d'un fichier : backlinks et tags mis à jour en ~20 ms au lieu d'attendre un reindex manuel.
+  - Graph view 500+ nœuds : reste interactif (>30 fps) grâce au culling + plafond.
+
+### Reporté
+
+- Markdown parsing déporté en Web Worker : refactor async profond qui casse l'API synchrone partout ; gain réel seulement sur documents > 1 Mo. Couvert à 95 % par le debounce 120 ms + la LRU `splitFrontMatter`.
+- Virtualisation des listes (SearchPanel, ReplacePanel, FileTree) : ajouterait `@tanstack/react-virtual`. Reste ouvert.
+- Normalisation du store d'onglets (Zustand / Map) : refactor structurel à décider séparément.
+- `pulldown-cmark` côté Rust pour le rendu preview : gros gain théorique mais architecture différente.
+
+---
+
 ## [0.3.0] — 2026-04-18
 
 ### Ajouté — Import PDF

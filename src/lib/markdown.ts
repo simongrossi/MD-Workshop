@@ -91,7 +91,14 @@ function annotateCheckboxes(html: string): string {
   );
 }
 
-export function splitFrontMatter(content: string) {
+// Tiny LRU around the full Markdown parse + sanitize pipeline. Multiple
+// components (PreviewPane, OutlinePanel, App status bar) call this with the
+// same content on the same render pass; caching short-circuits the expensive
+// marked + DOMPurify work for identical input.
+const SPLIT_CACHE_SIZE = 4;
+const splitCache = new Map<string, SplitFrontMatterResult>();
+
+function runSplitFrontMatter(content: string): SplitFrontMatterResult {
   const parsed = parseFrontMatter(content);
 
   let html = '';
@@ -103,6 +110,7 @@ export function splitFrontMatter(content: string) {
       USE_PROFILES: { html: true },
       ADD_ATTR: ['data-wiki', 'data-checkbox-index']
     });
+    html = html.replace(/<img(?![^>]*\bloading=)/gi, '<img loading="lazy"');
   } catch {
     html = '<p>Impossible de générer l’aperçu de ce document.</p>';
   }
@@ -114,6 +122,23 @@ export function splitFrontMatter(content: string) {
     frontMatterError: parsed.frontMatterError,
     rawFrontMatter: parsed.rawFrontMatter
   };
+}
+
+export function splitFrontMatter(content: string): SplitFrontMatterResult {
+  const cached = splitCache.get(content);
+  if (cached) {
+    // bump to most-recent
+    splitCache.delete(content);
+    splitCache.set(content, cached);
+    return cached;
+  }
+  const result = runSplitFrontMatter(content);
+  splitCache.set(content, result);
+  if (splitCache.size > SPLIT_CACHE_SIZE) {
+    const oldest = splitCache.keys().next().value;
+    if (oldest !== undefined) splitCache.delete(oldest);
+  }
+  return result;
 }
 
 /**

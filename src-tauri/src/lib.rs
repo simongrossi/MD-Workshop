@@ -4,10 +4,11 @@ use anyhow::Context;
 use regex::RegexBuilder;
 use serde::Serialize;
 use std::{
+    collections::HashMap,
     fs,
     path::{Component, Path, PathBuf},
-    sync::Mutex,
-    time::UNIX_EPOCH,
+    sync::{Mutex, OnceLock},
+    time::{Instant, UNIX_EPOCH},
 };
 use tauri::Manager;
 use walkdir::WalkDir;
@@ -37,6 +38,102 @@ struct SearchResult {
 #[derive(Default)]
 struct AssetScopeState {
     current_root: Mutex<Option<PathBuf>>,
+}
+
+/// Short-lived cache for `list_markdown_files` results. The UI fires the list
+/// command on every tab switch / panel refresh; without a file watcher we
+/// cap freshness with a TTL and bust the cache explicitly on any in-app
+/// mutation (create/rename/delete/save_as). External edits are still picked
+/// up within `FILE_LIST_CACHE_TTL_MS`.
+#[derive(Default)]
+struct FileListCache {
+    entries: Mutex<HashMap<String, CachedFileList>>,
+}
+
+struct CachedFileList {
+    stored_at: Instant,
+    files: Vec<MarkdownFileEntry>,
+}
+
+const FILE_LIST_CACHE_TTL_MS: u128 = 1500;
+
+impl FileListCache {
+    fn get(&self, root: &str) -> Option<Vec<MarkdownFileEntry>> {
+        let map = self.entries.lock().ok()?;
+        let cached = map.get(root)?;
+        if cached.stored_at.elapsed().as_millis() > FILE_LIST_CACHE_TTL_MS {
+            return None;
+        }
+        Some(cached.files.clone())
+    }
+
+    fn put(&self, root: String, files: Vec<MarkdownFileEntry>) {
+        if let Ok(mut map) = self.entries.lock() {
+            map.insert(
+                root,
+                CachedFileList {
+                    stored_at: Instant::now(),
+                    files,
+                },
+            );
+        }
+    }
+
+    fn invalidate(&self, root: &str) {
+        if let Ok(mut map) = self.entries.lock() {
+            map.remove(root);
+        }
+    }
+}
+
+impl Clone for MarkdownFileEntry {
+    fn clone(&self) -> Self {
+        MarkdownFileEntry {
+            path: self.path.clone(),
+            relative_path: self.relative_path.clone(),
+            name: self.name.clone(),
+            modified_unix: self.modified_unix,
+            size: self.size,
+        }
+    }
+}
+
+/// Per-workspace cache for `get_all_tags`. The tag aggregation is a join over
+/// the whole tags table so recomputing per sidebar render is wasteful when
+/// nothing changed. Invalidated on any command that touches workspace files.
+#[derive(Default)]
+struct TagsCache {
+    entries: Mutex<HashMap<String, Vec<db::TagCount>>>,
+}
+
+impl TagsCache {
+    fn get(&self, root: &str) -> Option<Vec<db::TagCount>> {
+        self.entries.lock().ok()?.get(root).cloned()
+    }
+    fn put(&self, root: String, tags: Vec<db::TagCount>) {
+        if let Ok(mut m) = self.entries.lock() {
+            m.insert(root, tags);
+        }
+    }
+    fn invalidate(&self, root: &str) {
+        if let Ok(mut m) = self.entries.lock() {
+            m.remove(root);
+        }
+    }
+}
+
+/// Holds the active notify debouncer for the current workspace. Dropping the
+/// previous debouncer (by replacing this Option) stops the old watcher. We
+/// keep the debouncer in a Mutex because Tauri commands may swap workspaces
+/// concurrently with ongoing events.
+#[derive(Default)]
+struct WorkspaceWatcher {
+    active: Mutex<Option<WatchHandle>>,
+}
+
+struct WatchHandle {
+    root: PathBuf,
+    _debouncer: notify_debouncer_mini::Debouncer<notify::RecommendedWatcher>,
 }
 
 pub fn is_markdown(path: &Path) -> bool {
@@ -83,7 +180,22 @@ pub fn should_skip_entry(entry: &walkdir::DirEntry) -> bool {
     )
 }
 
+/// Process-wide cache for `canonicalize_root`. Every Tauri command calls
+/// canonicalize_root at least once, each call is a syscall; paths rarely
+/// change within a session so caching the resolved form is a net win.
+static CANON_CACHE: OnceLock<Mutex<HashMap<String, PathBuf>>> = OnceLock::new();
+
+fn canon_cache() -> &'static Mutex<HashMap<String, PathBuf>> {
+    CANON_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
 fn canonicalize_root(root_path: &str) -> Result<PathBuf, String> {
+    if let Ok(map) = canon_cache().lock() {
+        if let Some(cached) = map.get(root_path) {
+            return Ok(cached.clone());
+        }
+    }
+
     let root = PathBuf::from(root_path);
     if !root.exists() {
         return Err("Le dossier n'existe pas.".to_string());
@@ -92,7 +204,113 @@ fn canonicalize_root(root_path: &str) -> Result<PathBuf, String> {
         return Err("Le chemin fourni n'est pas un dossier.".to_string());
     }
 
-    fs::canonicalize(&root).map_err(|e| e.to_string())
+    let resolved = fs::canonicalize(&root).map_err(|e| e.to_string())?;
+    if let Ok(mut map) = canon_cache().lock() {
+        map.insert(root_path.to_string(), resolved.clone());
+    }
+    Ok(resolved)
+}
+
+/// Swap the workspace watcher to a new root. Creating the debouncer starts a
+/// background thread; dropping the old one stops the previous watch. Events
+/// land on that thread and invalidate caches + re-index on the fly so the UI
+/// stays coherent with disk state without polling.
+fn start_watching(app: tauri::AppHandle, root: PathBuf) -> Result<(), String> {
+    use notify::RecursiveMode;
+    use notify_debouncer_mini::{new_debouncer, DebounceEventResult};
+    use std::time::Duration;
+
+    let watcher_state = app.state::<WorkspaceWatcher>();
+
+    // Early-out if we're already watching this exact root.
+    {
+        let guard = watcher_state
+            .active
+            .lock()
+            .map_err(|_| "Watcher state corrompu.".to_string())?;
+        if let Some(handle) = guard.as_ref() {
+            if handle.root == root {
+                return Ok(());
+            }
+        }
+    }
+
+    let watched_root = root.clone();
+    let cb_app = app.clone();
+    let mut debouncer = new_debouncer(
+        Duration::from_millis(300),
+        move |res: DebounceEventResult| match res {
+            Ok(events) => handle_watch_events(&cb_app, &watched_root, events),
+            Err(errors) => eprintln!("md-workshop watcher error: {errors:?}"),
+        },
+    )
+    .map_err(|e| format!("Impossible de créer le watcher : {e}"))?;
+
+    debouncer
+        .watcher()
+        .watch(&root, RecursiveMode::Recursive)
+        .map_err(|e| format!("Impossible de surveiller {root:?} : {e}"))?;
+
+    let mut guard = watcher_state
+        .active
+        .lock()
+        .map_err(|_| "Watcher state corrompu.".to_string())?;
+    *guard = Some(WatchHandle {
+        root,
+        _debouncer: debouncer,
+    });
+    Ok(())
+}
+
+fn handle_watch_events(
+    app: &tauri::AppHandle,
+    root: &Path,
+    events: Vec<notify_debouncer_mini::DebouncedEvent>,
+) {
+    let root_key = normalize_path(root);
+    let mut invalidate_lists = false;
+    let mut changed_md: Vec<PathBuf> = Vec::new();
+
+    for ev in events {
+        // Ignore our own index directory (SQLite WAL churn would otherwise
+        // drive a feedback loop).
+        if ev.path.components().any(|c| c.as_os_str() == ".md-workshop") {
+            continue;
+        }
+        invalidate_lists = true;
+        if is_markdown(&ev.path) {
+            changed_md.push(ev.path);
+        }
+    }
+
+    if !invalidate_lists {
+        return;
+    }
+
+    if let Some(list_cache) = app.try_state::<FileListCache>() {
+        list_cache.invalidate(&root_key);
+    }
+    if let Some(tags_cache) = app.try_state::<TagsCache>() {
+        tags_cache.invalidate(&root_key);
+    }
+
+    if changed_md.is_empty() {
+        return;
+    }
+
+    if let Ok(handle) = db::get_connection(root) {
+        if let Ok(conn) = handle.lock() {
+            for p in changed_md {
+                if p.exists() {
+                    db::index_single_file(&conn, root, &p).ok();
+                } else if let Ok(norm) = fs::canonicalize(p.parent().unwrap_or(root))
+                    .map(|_| normalize_path(&p))
+                {
+                    db::remove_indexed_file(&conn, &norm).ok();
+                }
+            }
+        }
+    }
 }
 
 fn ensure_path_is_within_root(root: &Path, target: &Path) -> Result<(), String> {
@@ -144,7 +362,14 @@ fn set_workspace_asset_scope(
         .allow_directory(&root, true)
         .map_err(|e| e.to_string())?;
 
-    *current_root = Some(root);
+    *current_root = Some(root.clone());
+    drop(current_root);
+
+    // Start (or swap) the file-system watcher for this workspace so external
+    // edits stay reflected in our caches and SQLite index.
+    if let Err(e) = start_watching(app.clone(), root) {
+        eprintln!("md-workshop: watcher init failed: {e}");
+    }
     Ok(())
 }
 
@@ -263,8 +488,17 @@ pub fn relative_from_root(root: &Path, path: &Path) -> String {
 // ── Existing commands ────────────────────────────────────────────────
 
 #[tauri::command]
-fn list_markdown_files(root_path: String) -> Result<Vec<MarkdownFileEntry>, String> {
+fn list_markdown_files(
+    root_path: String,
+    cache: tauri::State<FileListCache>,
+) -> Result<Vec<MarkdownFileEntry>, String> {
     let root = canonicalize_root(&root_path)?;
+    let cache_key = normalize_path(&root);
+
+    if let Some(hit) = cache.get(&cache_key) {
+        return Ok(hit);
+    }
+
     let mut files = Vec::new();
 
     for entry in WalkDir::new(&root)
@@ -277,7 +511,11 @@ fn list_markdown_files(root_path: String) -> Result<Vec<MarkdownFileEntry>, Stri
             continue;
         }
 
-        let metadata = fs::metadata(path).map_err(|e| e.to_string())?;
+        // Prefer WalkDir's already-fetched metadata to avoid an extra stat syscall.
+        let metadata = match entry.metadata() {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
         let modified_unix = metadata
             .modified()
             .ok()
@@ -298,17 +536,28 @@ fn list_markdown_files(root_path: String) -> Result<Vec<MarkdownFileEntry>, Stri
     }
 
     files.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
+    cache.put(cache_key, files.clone());
     Ok(files)
 }
 
 #[tauri::command]
-fn read_markdown_file(root_path: String, path: String) -> Result<String, String> {
+async fn read_markdown_file(root_path: String, path: String) -> Result<String, String> {
     let target = resolve_markdown_file(&root_path, &path)?;
-    fs::read_to_string(target).map_err(|e| e.to_string())
+    tauri::async_runtime::spawn_blocking(move || {
+        fs::read_to_string(target).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("Lecture interrompue : {e}"))?
 }
 
 #[tauri::command]
-fn save_markdown_file(root_path: String, path: String, content: String) -> Result<(), String> {
+fn save_markdown_file(
+    root_path: String,
+    path: String,
+    content: String,
+    tags_cache: tauri::State<TagsCache>,
+) -> Result<(), String> {
+    let root = canonicalize_root(&root_path)?;
     let target = resolve_markdown_file(&root_path, &path)?;
     let backup_path = backup_path_for(&target);
 
@@ -318,7 +567,17 @@ fn save_markdown_file(root_path: String, path: String, content: String) -> Resul
             .map_err(|e| e.to_string())?;
     }
 
-    fs::write(&target, content).map_err(|e| e.to_string())
+    fs::write(&target, content).map_err(|e| e.to_string())?;
+
+    // Refresh this file's entry in the FTS / link / tag index so backlinks,
+    // search and tag lists stay in sync without a full workspace walk.
+    if let Ok(handle) = db::get_connection(&root) {
+        if let Ok(conn) = handle.lock() {
+            db::index_single_file(&conn, &root, &target).ok();
+        }
+    }
+    tags_cache.invalidate(&normalize_path(&root));
+    Ok(())
 }
 
 fn backup_path_for(path: &Path) -> PathBuf {
@@ -360,14 +619,20 @@ fn do_convert_pdf(bytes: &[u8]) -> Result<PdfConversionResult, String> {
 }
 
 #[tauri::command]
-fn convert_pdf_to_markdown(pdf_bytes: Vec<u8>) -> Result<PdfConversionResult, String> {
-    do_convert_pdf(&pdf_bytes)
+async fn convert_pdf_to_markdown(pdf_bytes: Vec<u8>) -> Result<PdfConversionResult, String> {
+    tauri::async_runtime::spawn_blocking(move || do_convert_pdf(&pdf_bytes))
+        .await
+        .map_err(|e| format!("Tâche PDF interrompue : {e}"))?
 }
 
 #[tauri::command]
-fn convert_pdf_path_to_markdown(path: String) -> Result<PdfConversionResult, String> {
-    let bytes = fs::read(&path).map_err(|e| format!("Impossible de lire le PDF : {e}"))?;
-    do_convert_pdf(&bytes)
+async fn convert_pdf_path_to_markdown(path: String) -> Result<PdfConversionResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let bytes = fs::read(&path).map_err(|e| format!("Impossible de lire le PDF : {e}"))?;
+        do_convert_pdf(&bytes)
+    })
+    .await
+    .map_err(|e| format!("Tâche PDF interrompue : {e}"))?
 }
 
 #[tauri::command]
@@ -407,7 +672,12 @@ fn reveal_in_file_manager(path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn create_markdown_file(root_path: String, name: String) -> Result<String, String> {
+fn create_markdown_file(
+    root_path: String,
+    name: String,
+    cache: tauri::State<FileListCache>,
+    tags_cache: tauri::State<TagsCache>,
+) -> Result<String, String> {
     let root = canonicalize_root(&root_path)?;
     let target = resolve_writable_markdown_target(&root, &root, &name, true)?;
     let display_name = target
@@ -429,11 +699,15 @@ fn create_markdown_file(root_path: String, name: String) -> Result<String, Strin
 
     // Re-index
     if let Ok(resolved) = fs::canonicalize(&target) {
-        if let Ok(conn) = db::open_index(&root) {
-            db::index_single_file(&conn, &root, &resolved).ok();
+        if let Ok(handle) = db::get_connection(&root) {
+            if let Ok(conn) = handle.lock() {
+                db::index_single_file(&conn, &root, &resolved).ok();
+            }
         }
     }
 
+    cache.invalidate(&normalize_path(&root));
+    tags_cache.invalidate(&normalize_path(&root));
     Ok(normalize_path(&fs::canonicalize(&target).map_err(|e| e.to_string())?))
 }
 
@@ -453,6 +727,8 @@ fn rename_markdown_file(
     path: String,
     new_name: String,
     update_links: bool,
+    cache: tauri::State<FileListCache>,
+    tags_cache: tauri::State<TagsCache>,
 ) -> Result<RenameResult, String> {
     let root = canonicalize_root(&root_path)?;
     let target = resolve_markdown_file(&root_path, &path)?;
@@ -507,11 +783,15 @@ fn rename_markdown_file(
     }
 
     // Full reindex to clean up stale references
-    if let Ok(conn) = db::open_index(&root) {
-        db::reindex(&conn, &root).ok();
+    if let Ok(handle) = db::get_connection(&root) {
+        if let Ok(conn) = handle.lock() {
+            db::reindex(&conn, &root).ok();
+        }
     }
 
     let new_path = normalize_path(&fs::canonicalize(&new_target).map_err(|e| e.to_string())?);
+    cache.invalidate(&normalize_path(&root));
+    tags_cache.invalidate(&normalize_path(&root));
     Ok(RenameResult {
         new_path,
         files_updated,
@@ -680,7 +960,12 @@ fn save_image(
 }
 
 #[tauri::command]
-fn delete_markdown_file(root_path: String, path: String) -> Result<(), String> {
+fn delete_markdown_file(
+    root_path: String,
+    path: String,
+    cache: tauri::State<FileListCache>,
+    tags_cache: tauri::State<TagsCache>,
+) -> Result<(), String> {
     let root = canonicalize_root(&root_path)?;
     let target = resolve_markdown_file(&root_path, &path)?;
 
@@ -694,10 +979,14 @@ fn delete_markdown_file(root_path: String, path: String) -> Result<(), String> {
     }
 
     // Reindex
-    if let Ok(conn) = db::open_index(&root) {
-        db::reindex(&conn, &root).ok();
+    if let Ok(handle) = db::get_connection(&root) {
+        if let Ok(conn) = handle.lock() {
+            db::reindex(&conn, &root).ok();
+        }
     }
 
+    cache.invalidate(&normalize_path(&root));
+    tags_cache.invalidate(&normalize_path(&root));
     Ok(())
 }
 
@@ -706,6 +995,8 @@ fn save_as_markdown_file(
     root_path: String,
     name: String,
     content: String,
+    cache: tauri::State<FileListCache>,
+    tags_cache: tauri::State<TagsCache>,
 ) -> Result<String, String> {
     let root = canonicalize_root(&root_path)?;
     let target = resolve_writable_markdown_target(&root, &root, &name, true)?;
@@ -722,71 +1013,113 @@ fn save_as_markdown_file(
 
     // Re-index
     if let Ok(resolved) = fs::canonicalize(&target) {
-        if let Ok(conn) = db::open_index(&root) {
-            db::index_single_file(&conn, &root, &resolved).ok();
+        if let Ok(handle) = db::get_connection(&root) {
+            if let Ok(conn) = handle.lock() {
+                db::index_single_file(&conn, &root, &resolved).ok();
+            }
         }
     }
 
+    cache.invalidate(&normalize_path(&root));
+    tags_cache.invalidate(&normalize_path(&root));
     Ok(normalize_path(&fs::canonicalize(&target).map_err(|e| e.to_string())?))
 }
 
+fn collect_line_matches(content: &str, regex: &regex::Regex) -> Vec<SearchMatch> {
+    content
+        .lines()
+        .enumerate()
+        .filter_map(|(idx, line)| {
+            if regex.is_match(line) {
+                Some(SearchMatch {
+                    line_number: idx + 1,
+                    line: line.trim().to_string(),
+                })
+            } else {
+                None
+            }
+        })
+        .take(8)
+        .collect()
+}
+
 #[tauri::command]
-fn search_markdown(root_path: String, query: String) -> Result<Vec<SearchResult>, String> {
-    let root = canonicalize_root(&root_path)?;
-    let needle = query.trim();
-    if needle.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let regex = RegexBuilder::new(&regex::escape(needle))
-        .case_insensitive(true)
-        .build()
-        .map_err(|e| e.to_string())?;
-
-    let mut results = Vec::new();
-
-    for entry in WalkDir::new(&root)
-        .into_iter()
-        .filter_entry(|e| !should_skip_entry(e))
-        .filter_map(|e| e.ok())
-    {
-        let path = entry.path();
-        if !entry.file_type().is_file() || !is_markdown(path) {
-            continue;
+async fn search_markdown(root_path: String, query: String) -> Result<Vec<SearchResult>, String> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<Vec<SearchResult>, String> {
+        let root = canonicalize_root(&root_path)?;
+        let needle = query.trim();
+        if needle.is_empty() {
+            return Ok(Vec::new());
         }
 
-        let content = match fs::read_to_string(path) {
-            Ok(content) => content,
-            Err(_) => continue,
-        };
+        let regex = RegexBuilder::new(&regex::escape(needle))
+            .case_insensitive(true)
+            .build()
+            .map_err(|e| e.to_string())?;
 
-        let matches: Vec<SearchMatch> = content
-            .lines()
-            .enumerate()
-            .filter_map(|(idx, line)| {
-                if regex.is_match(line) {
-                    Some(SearchMatch {
-                        line_number: idx + 1,
-                        line: line.trim().to_string(),
-                    })
-                } else {
-                    None
+        let mut results = Vec::new();
+
+        let candidates = (|| -> Result<Vec<String>, String> {
+            let handle = db::get_connection(&root)?;
+            let conn = handle.lock()?;
+            if db::index_has_files(&conn)? {
+                db::search_fts_paths(&conn, needle, 200)
+            } else {
+                Ok(Vec::new())
+            }
+        })()
+        .ok();
+
+        if let Some(paths) = candidates.filter(|p| !p.is_empty()) {
+            for path_str in &paths {
+                let path = Path::new(path_str);
+                let content = match fs::read_to_string(path) {
+                    Ok(c) => c,
+                    Err(_) => continue,
+                };
+                let matches = collect_line_matches(&content, &regex);
+                if !matches.is_empty() {
+                    results.push(SearchResult {
+                        path: normalize_path(path),
+                        relative_path: relative_from_root(&root, path),
+                        matches,
+                    });
                 }
-            })
-            .take(8)
-            .collect();
+            }
+        } else {
+            // Fallback: no index yet. Walk the workspace directly.
+            for entry in WalkDir::new(&root)
+                .into_iter()
+                .filter_entry(|e| !should_skip_entry(e))
+                .filter_map(|e| e.ok())
+            {
+                let path = entry.path();
+                if !entry.file_type().is_file() || !is_markdown(path) {
+                    continue;
+                }
 
-        if !matches.is_empty() {
-            results.push(SearchResult {
-                path: normalize_path(path),
-                relative_path: relative_from_root(&root, path),
-                matches,
-            });
+                let content = match fs::read_to_string(path) {
+                    Ok(content) => content,
+                    Err(_) => continue,
+                };
+
+                let matches = collect_line_matches(&content, &regex);
+
+                if !matches.is_empty() {
+                    results.push(SearchResult {
+                        path: normalize_path(path),
+                        relative_path: relative_from_root(&root, path),
+                        matches,
+                    });
+                }
+            }
         }
-    }
 
-    results.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
-    Ok(results)
+        results.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
+        Ok(results)
+    })
+    .await
+    .map_err(|e| format!("Tâche recherche interrompue : {e}"))?
 }
 
 // ── Index commands ───────────────────────────────────────────────────
@@ -794,7 +1127,8 @@ fn search_markdown(root_path: String, query: String) -> Result<Vec<SearchResult>
 #[tauri::command]
 fn reindex_workspace(root_path: String) -> Result<db::IndexStats, String> {
     let root = canonicalize_root(&root_path)?;
-    let conn = db::open_index(&root)?;
+    let handle = db::get_connection(&root)?;
+    let conn = handle.lock()?;
     db::reindex(&conn, &root)
 }
 
@@ -802,42 +1136,57 @@ fn reindex_workspace(root_path: String) -> Result<db::IndexStats, String> {
 fn index_file(root_path: String, path: String) -> Result<(), String> {
     let root = canonicalize_root(&root_path)?;
     let target = resolve_markdown_file(&root_path, &path)?;
-    let conn = db::open_index(&root)?;
+    let handle = db::get_connection(&root)?;
+    let conn = handle.lock()?;
     db::index_single_file(&conn, &root, &target)
 }
 
 #[tauri::command]
 fn search_index(root_path: String, query: String) -> Result<Vec<db::FtsResult>, String> {
     let root = canonicalize_root(&root_path)?;
-    let conn = db::open_index(&root)?;
+    let handle = db::get_connection(&root)?;
+    let conn = handle.lock()?;
     db::search_fts(&conn, &query)
 }
 
 #[tauri::command]
 fn get_backlinks(root_path: String, file_path: String) -> Result<Vec<db::BacklinkEntry>, String> {
     let root = canonicalize_root(&root_path)?;
-    let conn = db::open_index(&root)?;
+    let handle = db::get_connection(&root)?;
+    let conn = handle.lock()?;
     db::get_backlinks(&conn, &file_path)
 }
 
 #[tauri::command]
-fn get_all_tags(root_path: String) -> Result<Vec<db::TagCount>, String> {
+fn get_all_tags(
+    root_path: String,
+    cache: tauri::State<TagsCache>,
+) -> Result<Vec<db::TagCount>, String> {
     let root = canonicalize_root(&root_path)?;
-    let conn = db::open_index(&root)?;
-    db::get_all_tags(&conn)
+    let key = normalize_path(&root);
+    if let Some(hit) = cache.get(&key) {
+        return Ok(hit);
+    }
+    let handle = db::get_connection(&root)?;
+    let conn = handle.lock()?;
+    let tags = db::get_all_tags(&conn)?;
+    cache.put(key, tags.clone());
+    Ok(tags)
 }
 
 #[tauri::command]
 fn get_files_by_tag(root_path: String, tag: String) -> Result<Vec<db::FtsResult>, String> {
     let root = canonicalize_root(&root_path)?;
-    let conn = db::open_index(&root)?;
+    let handle = db::get_connection(&root)?;
+    let conn = handle.lock()?;
     db::get_files_by_tag(&conn, &tag)
 }
 
 #[tauri::command]
 fn find_broken_links(root_path: String) -> Result<Vec<db::BrokenLink>, String> {
     let root = canonicalize_root(&root_path)?;
-    let conn = db::open_index(&root)?;
+    let handle = db::get_connection(&root)?;
+    let conn = handle.lock()?;
     // Make sure the index is up-to-date before auditing
     db::reindex(&conn, &root).ok();
     db::find_broken_links(&conn, &root)
@@ -910,7 +1259,8 @@ fn get_graph_data(
     include_orphans: Option<bool>,
 ) -> Result<db::GraphData, String> {
     let root = canonicalize_root(&root_path)?;
-    let conn = db::open_index(&root)?;
+    let handle = db::get_connection(&root)?;
+    let conn = handle.lock()?;
     let tags = filter_tags.unwrap_or_default();
     match mode.as_str() {
         "local" => {
@@ -1032,19 +1382,26 @@ fn apply_replace(
 
         let content = fs::read_to_string(&target).map_err(|e| e.to_string())?;
 
-        // Build new content line by line
-        let mut new_lines: Vec<String> = Vec::new();
+        // Build new content directly into a String buffer to avoid cloning
+        // every unchanged line into a Vec before joining at the end.
+        let mut new_content = String::with_capacity(content.len());
         let mut file_replacements = 0usize;
+        let mut first = true;
 
         for line in content.lines() {
+            if !first {
+                new_content.push('\n');
+            }
+            first = false;
+
             if regex.is_match(line) {
-                let replaced = regex.replace_all(line, replace.as_str()).to_string();
+                let replaced = regex.replace_all(line, replace.as_str());
                 if replaced != line {
                     file_replacements += 1;
                 }
-                new_lines.push(replaced);
+                new_content.push_str(&replaced);
             } else {
-                new_lines.push(line.to_string());
+                new_content.push_str(line);
             }
         }
 
@@ -1056,7 +1413,6 @@ fn apply_replace(
             }
 
             // Preserve trailing newline if original had one
-            let mut new_content = new_lines.join("\n");
             if content.ends_with('\n') {
                 new_content.push('\n');
             }
@@ -1064,8 +1420,10 @@ fn apply_replace(
             fs::write(&target, &new_content).map_err(|e| e.to_string())?;
 
             // Re-index the file
-            if let Ok(conn) = db::open_index(&root) {
-                db::index_single_file(&conn, &root, &target).ok();
+            if let Ok(handle) = db::get_connection(&root) {
+                if let Ok(conn) = handle.lock() {
+                    db::index_single_file(&conn, &root, &target).ok();
+                }
             }
 
             files_changed += 1;
@@ -1124,6 +1482,9 @@ fn build_search_regex(
 pub fn run() {
     tauri::Builder::default()
         .manage(AssetScopeState::default())
+        .manage(FileListCache::default())
+        .manage(TagsCache::default())
+        .manage(WorkspaceWatcher::default())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             set_workspace_asset_scope,

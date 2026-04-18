@@ -1,4 +1,13 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
+import {
+  Suspense,
+  lazy,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MouseEvent as ReactMouseEvent
+} from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { open } from '@tauri-apps/plugin-dialog';
@@ -8,7 +17,11 @@ import { BrokenLinksDialog } from './components/BrokenLinksDialog';
 import { CommandPalette, type PaletteCommand } from './components/CommandPalette';
 import { FileTree } from './components/FileTree';
 import { GraphControls } from './components/GraphControls';
-import { GraphView } from './components/GraphView';
+// d3-force is a sizable dependency only needed when the graph view is open;
+// defer loading it until the user actually switches to that mode.
+const GraphView = lazy(() =>
+  import('./components/GraphView').then((m) => ({ default: m.GraphView }))
+);
 import { LibraryPicker } from './components/LibraryPicker';
 import { LibrarySwitcher } from './components/LibrarySwitcher';
 import { OutlinePanel } from './components/OutlinePanel';
@@ -1732,22 +1745,24 @@ ${html}
                 onFilterTagsChange={setGraphFilterTags}
                 onShowOrphansChange={setGraphShowOrphans}
               />
-              <GraphView
-                rootFolder={rootFolder}
-                activeFilePath={activeDoc?.path ?? null}
-                mode={graphMode}
-                depth={graphDepth}
-                filterFolder={graphFilterFolder}
-                filterTags={graphFilterTags}
-                showOrphans={graphShowOrphans}
-                fullscreen={graphFullscreen}
-                onToggleFullscreen={() => setGraphFullscreen((v) => !v)}
-                onNavigate={(path) => void openFile(path)}
-                onOpenInEditor={(path) => {
-                  void openFile(path);
-                  setViewMode('split');
-                }}
-              />
+              <Suspense fallback={<div className="graph-loading" aria-busy="true" />}>
+                <GraphView
+                  rootFolder={rootFolder}
+                  activeFilePath={activeDoc?.path ?? null}
+                  mode={graphMode}
+                  depth={graphDepth}
+                  filterFolder={graphFilterFolder}
+                  filterTags={graphFilterTags}
+                  showOrphans={graphShowOrphans}
+                  fullscreen={graphFullscreen}
+                  onToggleFullscreen={() => setGraphFullscreen((v) => !v)}
+                  onNavigate={(path) => void openFile(path)}
+                  onOpenInEditor={(path) => {
+                    void openFile(path);
+                    setViewMode('split');
+                  }}
+                />
+              </Suspense>
             </div>
           ) : activeDoc ? (
             <div className="document-panel">

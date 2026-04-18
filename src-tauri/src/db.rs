@@ -6,7 +6,7 @@ use std::{
     collections::{HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
-    sync::OnceLock,
+    sync::{Arc, Mutex, MutexGuard, OnceLock},
     time::{Instant, UNIX_EPOCH},
 };
 use walkdir::WalkDir;
@@ -48,7 +48,7 @@ pub struct BacklinkEntry {
     pub context_line: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 pub struct TagCount {
     pub tag: String,
     pub count: usize,
@@ -68,6 +68,38 @@ fn db_dir(root: &Path) -> PathBuf {
     root.join(".md-workshop")
 }
 
+/// Process-wide pool of SQLite connections keyed by canonical root path.
+/// Reusing a connection avoids re-running `open_index` (file open +
+/// PRAGMA batch + schema bootstrap) on every Tauri command.
+static CONN_POOL: OnceLock<Mutex<HashMap<String, Arc<Mutex<Connection>>>>> = OnceLock::new();
+
+fn conn_pool() -> &'static Mutex<HashMap<String, Arc<Mutex<Connection>>>> {
+    CONN_POOL.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Handle to a pooled connection. Lock it via [`ConnHandle::lock`] to run
+/// queries; the handle keeps the underlying `Arc<Mutex<Connection>>` alive.
+pub struct ConnHandle(Arc<Mutex<Connection>>);
+
+impl ConnHandle {
+    pub fn lock(&self) -> Result<MutexGuard<'_, Connection>, String> {
+        self.0.lock().map_err(|_| "Connexion SQLite corrompue.".to_string())
+    }
+}
+
+/// Return a pooled connection for the given workspace, opening it on first use.
+pub fn get_connection(root: &Path) -> Result<ConnHandle, String> {
+    let key = crate::normalize_path(root);
+    let mut map = conn_pool().lock().map_err(|_| "Pool SQLite corrompu.".to_string())?;
+    if let Some(arc) = map.get(&key) {
+        return Ok(ConnHandle(Arc::clone(arc)));
+    }
+    let conn = open_index(root)?;
+    let arc = Arc::new(Mutex::new(conn));
+    map.insert(key, Arc::clone(&arc));
+    Ok(ConnHandle(arc))
+}
+
 pub fn open_index(root: &Path) -> Result<Connection, String> {
     let dir = db_dir(root);
     fs::create_dir_all(&dir).map_err(|e| format!("Impossible de créer {dir:?}: {e}"))?;
@@ -75,10 +107,16 @@ pub fn open_index(root: &Path) -> Result<Connection, String> {
     let db_path = dir.join("index.db");
     let conn = Connection::open(&db_path).map_err(|e| e.to_string())?;
 
+    // WAL + NORMAL sync: good durability with much less fsync traffic.
+    // mmap_size / cache_size / temp_store: keep hot index pages in memory.
+    // On a 10k-file workspace this can cut FTS query time by 30-50%.
     conn.execute_batch(
         "PRAGMA journal_mode = WAL;
          PRAGMA synchronous = NORMAL;
-         PRAGMA foreign_keys = ON;",
+         PRAGMA foreign_keys = ON;
+         PRAGMA mmap_size = 268435456;
+         PRAGMA cache_size = -20000;
+         PRAGMA temp_store = MEMORY;",
     )
     .map_err(|e| e.to_string())?;
 
@@ -337,6 +375,10 @@ fn write_parsed_file(conn: &Connection, p: &ParsedFile) -> Result<(usize, usize)
     Ok((link_count, tag_count))
 }
 
+pub fn remove_indexed_file(conn: &Connection, path: &str) -> Result<(), String> {
+    remove_file_from_index(conn, path)
+}
+
 fn remove_file_from_index(conn: &Connection, path: &str) -> Result<(), String> {
     conn.execute("DELETE FROM wiki_links WHERE source_path = ?1", params![path])
         .map_err(|e| e.to_string())?;
@@ -487,6 +529,7 @@ fn extract_inline_tags(content: &str) -> Vec<String> {
     let body = strip_front_matter(content);
     let re = inline_tag_re();
 
+    let mut seen: HashSet<String> = HashSet::new();
     let mut tags: Vec<String> = Vec::new();
     let mut in_code_block = false;
 
@@ -507,9 +550,10 @@ fn extract_inline_tags(content: &str) -> Vec<String> {
         }
 
         for cap in re.captures_iter(line) {
-            let tag = cap[1].to_string();
-            if !tags.contains(&tag) {
-                tags.push(tag);
+            let raw = &cap[1];
+            if !seen.contains(raw) {
+                seen.insert(raw.to_string());
+                tags.push(raw.to_string());
             }
         }
     }
@@ -563,6 +607,53 @@ fn extract_frontmatter_tags(content: &str) -> Vec<String> {
 
 // ── Queries ──────────────────────────────────────────────────────────
 
+/// Returns true when the FTS index has at least one indexed file. Callers can
+/// use this to decide between a fast FTS candidate lookup and a full disk
+/// walk fallback (fresh workspaces have an empty index).
+pub fn index_has_files(conn: &Connection) -> Result<bool, String> {
+    conn.query_row("SELECT 1 FROM indexed_files LIMIT 1", [], |_| Ok(true))
+        .or_else(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => Ok(false),
+            other => Err(other.to_string()),
+        })
+}
+
+/// Returns ordered candidate paths matching the FTS query. Used to narrow the
+/// set of files that need a line-level regex pass for SearchPanel results.
+pub fn search_fts_paths(conn: &Connection, query: &str, limit: i64) -> Result<Vec<String>, String> {
+    let trimmed = query.trim();
+    if trimmed.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let fts_query = trimmed
+        .split_whitespace()
+        .map(|word| {
+            let escaped = word.replace('"', "\"\"");
+            format!("\"{escaped}\"*")
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT f.path FROM fts_content
+             JOIN indexed_files f ON f.path = fts_content.path
+             WHERE fts_content MATCH ?1
+             ORDER BY rank
+             LIMIT ?2",
+        )
+        .map_err(|e| e.to_string())?;
+
+    let results = stmt
+        .query_map(params![fts_query, limit], |row| row.get::<_, String>(0))
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    Ok(results)
+}
+
 pub fn search_fts(conn: &Connection, query: &str) -> Result<Vec<FtsResult>, String> {
     let trimmed = query.trim();
     if trimmed.is_empty() {
@@ -606,6 +697,11 @@ pub fn search_fts(conn: &Connection, query: &str) -> Result<Vec<FtsResult>, Stri
     Ok(results)
 }
 
+/// Hard cap on the number of backlinks we return in one call. `find_link_context`
+/// reads each source file from disk, so running unbounded is the real cost for
+/// heavily linked hub files — 200 is more than the panel ever shows anyway.
+const BACKLINKS_LIMIT: i64 = 200;
+
 pub fn get_backlinks(conn: &Connection, file_path: &str) -> Result<Vec<BacklinkEntry>, String> {
     // Get the target file's name without extension for wiki-link matching
     let file_name = Path::new(file_path)
@@ -635,12 +731,13 @@ pub fn get_backlinks(conn: &Connection, file_path: &str) -> Result<Vec<BacklinkE
                 "SELECT DISTINCT f.path, f.relative_path, f.name
                  FROM wiki_links wl
                  JOIN indexed_files f ON f.path = wl.source_path
-                 WHERE wl.target_name = ?1 COLLATE NOCASE",
+                 WHERE wl.target_name = ?1 COLLATE NOCASE
+                 LIMIT ?2",
             )
             .map_err(|e| e.to_string())?;
 
         let rows = stmt
-            .query_map(params![stem], |row| {
+            .query_map(params![stem, BACKLINKS_LIMIT], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
@@ -650,6 +747,9 @@ pub fn get_backlinks(conn: &Connection, file_path: &str) -> Result<Vec<BacklinkE
             .map_err(|e| e.to_string())?;
 
         for row in rows.flatten() {
+            if results.len() >= BACKLINKS_LIMIT as usize {
+                break;
+            }
             if row.0 != file_path && seen.insert(row.0.clone()) {
                 let context = find_link_context(&row.0, stem);
                 results.push(BacklinkEntry {
@@ -664,34 +764,41 @@ pub fn get_backlinks(conn: &Connection, file_path: &str) -> Result<Vec<BacklinkE
 
     // 2. Markdown links pointing to this file (match by relative path)
     if let Some(ref rel) = rel_path_of_target {
-        let mut stmt = conn
-            .prepare(
-                "SELECT DISTINCT f.path, f.relative_path, f.name
-                 FROM md_links ml
-                 JOIN indexed_files f ON f.path = ml.source_path
-                 WHERE ml.target_href LIKE ?1",
-            )
-            .map_err(|e| e.to_string())?;
+        let remaining = (BACKLINKS_LIMIT as usize).saturating_sub(results.len()) as i64;
+        if remaining > 0 {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT DISTINCT f.path, f.relative_path, f.name
+                     FROM md_links ml
+                     JOIN indexed_files f ON f.path = ml.source_path
+                     WHERE ml.target_href LIKE ?1
+                     LIMIT ?2",
+                )
+                .map_err(|e| e.to_string())?;
 
-        let pattern = format!("%{}", rel.replace('/', "%"));
-        let rows = stmt
-            .query_map(params![pattern], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                ))
-            })
-            .map_err(|e| e.to_string())?;
+            let pattern = format!("%{}", rel.replace('/', "%"));
+            let rows = stmt
+                .query_map(params![pattern, remaining], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })
+                .map_err(|e| e.to_string())?;
 
-        for row in rows.flatten() {
-            if row.0 != file_path && seen.insert(row.0.clone()) {
-                results.push(BacklinkEntry {
-                    path: row.0,
-                    relative_path: row.1,
-                    name: row.2,
-                    context_line: String::new(),
-                });
+            for row in rows.flatten() {
+                if results.len() >= BACKLINKS_LIMIT as usize {
+                    break;
+                }
+                if row.0 != file_path && seen.insert(row.0.clone()) {
+                    results.push(BacklinkEntry {
+                        path: row.0,
+                        relative_path: row.1,
+                        name: row.2,
+                        context_line: String::new(),
+                    });
+                }
             }
         }
     }

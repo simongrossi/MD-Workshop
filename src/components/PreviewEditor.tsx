@@ -67,7 +67,7 @@ export function PreviewEditor({
   const debouncedEmit = useDebouncedCallback((nextMarkdown: string) => {
     lastEmittedRef.current = nextMarkdown;
     onChange(nextMarkdown);
-  }, 150);
+  }, 300);
 
   const editor = useEditor({
     extensions,
