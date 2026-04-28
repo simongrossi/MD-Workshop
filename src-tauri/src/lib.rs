@@ -2,7 +2,7 @@ mod db;
 
 use anyhow::Context;
 use regex::RegexBuilder;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
     fs,
@@ -1452,6 +1452,126 @@ fn apply_replace(
 /// Returns `true` on the very first launch after a fresh install. We write a
 /// marker into Tauri's per-app config dir (which Windows removes on MSI
 /// uninstall); the frontend uses the result to drop stale localStorage state
+// ── Static site export ────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+struct SiteFile {
+    relative_path: String,
+    content: String,
+}
+
+#[derive(Debug, Serialize)]
+struct SiteStats {
+    pages_written: usize,
+    assets_copied: usize,
+    duration_ms: u128,
+    output_dir: String,
+}
+
+/// Reject path components that would escape the output directory or hit
+/// platform-specific edge cases (drive letters, root anchors, parent refs).
+fn is_safe_relative_path(rel: &str) -> bool {
+    if rel.is_empty() {
+        return false;
+    }
+    let p = Path::new(rel);
+    for component in p.components() {
+        match component {
+            Component::Normal(_) => {}
+            _ => return false,
+        }
+    }
+    true
+}
+
+/// Write all generated HTML/CSS/XML files under `output_dir`, optionally
+/// copying the workspace `assets/` folder. The frontend has already done all
+/// the rendering — Rust is just plumbing here.
+#[tauri::command]
+fn write_static_site(
+    root_path: String,
+    output_dir: String,
+    files: Vec<SiteFile>,
+    copy_assets: Option<bool>,
+) -> Result<SiteStats, String> {
+    let started = Instant::now();
+    let root = canonicalize_root(&root_path)?;
+
+    let output_path = PathBuf::from(&output_dir);
+    if output_path.as_os_str().is_empty() {
+        return Err("Le dossier de sortie est vide.".to_string());
+    }
+
+    fs::create_dir_all(&output_path)
+        .map_err(|e| format!("Impossible de créer le dossier de sortie : {e}"))?;
+    let output_canonical = fs::canonicalize(&output_path)
+        .map_err(|e| format!("Dossier de sortie inaccessible : {e}"))?;
+
+    // Refuse to write the site inside the workspace root unless the target is
+    // the conventional "_site" subfolder, to avoid splattering HTML over the
+    // user's notes by accident.
+    if output_canonical == root {
+        return Err(
+            "Le dossier de sortie ne peut pas être identique à la bibliothèque.".to_string(),
+        );
+    }
+
+    let mut pages_written = 0usize;
+    for file in &files {
+        if !is_safe_relative_path(&file.relative_path) {
+            return Err(format!(
+                "Chemin de sortie invalide : {}",
+                file.relative_path
+            ));
+        }
+        let target = output_canonical.join(&file.relative_path);
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("Impossible de créer {} : {e}", parent.display()))?;
+        }
+        fs::write(&target, file.content.as_bytes())
+            .map_err(|e| format!("Impossible d'écrire {} : {e}", target.display()))?;
+        pages_written += 1;
+    }
+
+    let mut assets_copied = 0usize;
+    if copy_assets.unwrap_or(true) {
+        let assets_src = root.join("assets");
+        if assets_src.is_dir() {
+            let assets_dst = output_canonical.join("assets");
+            assets_copied = copy_dir_count(&assets_src, &assets_dst)
+                .map_err(|e| format!("Impossible de copier les assets : {e}"))?;
+        }
+    }
+
+    Ok(SiteStats {
+        pages_written,
+        assets_copied,
+        duration_ms: started.elapsed().as_millis(),
+        output_dir: output_canonical.to_string_lossy().to_string(),
+    })
+}
+
+fn copy_dir_count(src: &Path, dst: &Path) -> std::io::Result<usize> {
+    if !dst.exists() {
+        fs::create_dir_all(dst)?;
+    }
+    let mut count = 0usize;
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        if file_type.is_dir() {
+            count += copy_dir_count(&from, &to)?;
+        } else if file_type.is_file() {
+            fs::copy(&from, &to)?;
+            count += 1;
+        }
+    }
+    Ok(count)
+}
+
 /// left behind by previous installs or dev sessions sharing the same
 /// WebView2 identifier.
 #[tauri::command]
@@ -1523,6 +1643,7 @@ pub fn run() {
             load_demo_workspace,
             preview_replace,
             apply_replace,
+            write_static_site,
             check_first_run
         ])
         .setup(|app| {

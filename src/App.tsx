@@ -15,6 +15,8 @@ import { Menu, Submenu } from '@tauri-apps/api/menu';
 import { BacklinksPanel } from './components/BacklinksPanel';
 import { BrokenLinksDialog } from './components/BrokenLinksDialog';
 import { CommandPalette, type PaletteCommand } from './components/CommandPalette';
+import { ExportSiteDialog } from './components/ExportSiteDialog';
+import { SlidePresenter } from './components/SlidePresenter';
 import { FileTree } from './components/FileTree';
 import { GraphControls } from './components/GraphControls';
 // d3-force is a sizable dependency only needed when the graph view is open;
@@ -36,6 +38,7 @@ import { TabBar } from './components/TabBar';
 import { EDITOR_FORMAT_MENU_ITEMS, type MarkdownEditorActionId } from './lib/editorActions';
 import type { EditorSettings, WikiLinkFile } from './lib/codemirror';
 import { splitFrontMatter, toggleCheckboxInSource } from './lib/markdown';
+import { exportToPdf } from './lib/pdfExport';
 import { markdownToWhatsApp } from './lib/whatsapp';
 import { loadSettings, saveSettings, type AppSettings } from './lib/settings';
 import { loadSnippets, saveSnippets, type Snippet } from './lib/snippets';
@@ -95,6 +98,8 @@ export default function App() {
   const [snippetsOpen, setSnippetsOpen] = useState(false);
   const [snippets, setSnippets] = useState<Snippet[]>(() => loadSnippets());
   const [brokenLinksOpen, setBrokenLinksOpen] = useState(false);
+  const [exportSiteOpen, setExportSiteOpen] = useState(false);
+  const [presentationOpen, setPresentationOpen] = useState(false);
   const [welcomeDropActive, setWelcomeDropActive] = useState(false);
   const [cursorInfo, setCursorInfo] = useState<{ line: number; col: number; selectionLength: number } | null>(null);
   const [sidebarWidth, setSidebarWidth] = useState(() => {
@@ -148,11 +153,14 @@ export default function App() {
     renameActiveFile: () => void;
     deleteActiveFile: () => void;
     exportToHtml: () => void;
+    exportToPdf: () => void;
+    exportSite: () => void;
     copyAsHtml: () => void;
     copyAsWhatsApp: () => void;
     openLibraryPicker: () => void;
     switchToFolder: (folder: string) => void;
     openBrokenLinks: () => void;
+    openPresentation: () => void;
   }>({
     chooseFolder: () => undefined,
     saveFile: () => undefined,
@@ -171,11 +179,14 @@ export default function App() {
     renameActiveFile: () => undefined,
     deleteActiveFile: () => undefined,
     exportToHtml: () => undefined,
+    exportToPdf: () => undefined,
+    exportSite: () => undefined,
     copyAsHtml: () => undefined,
     copyAsWhatsApp: () => undefined,
     openLibraryPicker: () => undefined,
     switchToFolder: () => undefined,
-    openBrokenLinks: () => undefined
+    openBrokenLinks: () => undefined,
+    openPresentation: () => undefined
   });
 
   // ── Derived state ──────────────────────────────────────────────────
@@ -245,6 +256,8 @@ export default function App() {
       { id: 'file.rename', label: 'Renommer le fichier…', category: 'Fichier', action: () => void renameActiveFile() },
       { id: 'file.delete', label: 'Supprimer le fichier…', category: 'Fichier', action: () => void deleteActiveFile() },
       { id: 'file.export-html', label: 'Exporter en HTML…', category: 'Fichier', action: () => void exportToHtml() },
+      { id: 'file.export-pdf', label: 'Exporter en PDF…', category: 'Fichier', action: () => void exportActiveDocToPdf() },
+      { id: 'file.export-site', label: 'Exporter en site statique…', category: 'Fichier', action: () => setExportSiteOpen(true) },
       { id: 'file.copy-html', label: 'Copier en HTML', category: 'Fichier', action: () => void copyAsHtml() },
       { id: 'file.copy-whatsapp', label: 'Copier pour WhatsApp', shortcut: 'Ctrl+Shift+W', category: 'Fichier', action: () => void copyAsWhatsApp() },
       { id: 'file.close-all', label: 'Fermer tous les onglets', category: 'Fichier', action: () => closeAllTabs() },
@@ -255,6 +268,7 @@ export default function App() {
       { id: 'view.split', label: 'Mode split', shortcut: 'Alt+2', category: 'Affichage', action: () => setViewMode('split') },
       { id: 'view.preview', label: 'Mode aperçu', shortcut: 'Alt+3', category: 'Affichage', action: () => setViewMode('preview') },
       { id: 'view.graph', label: 'Mode graphe', shortcut: 'Alt+4', category: 'Affichage', action: () => setViewMode('graph') },
+      { id: 'view.presentation', label: 'Mode présentation', shortcut: 'Alt+5', category: 'Affichage', action: () => { if (activeDoc) setPresentationOpen(true); } },
       { id: 'tools.replace', label: 'Recherche et remplacement', shortcut: 'Ctrl+Shift+H', category: 'Outils', action: () => setReplacePanelOpen(true) },
       { id: 'tools.settings', label: 'Paramètres…', shortcut: 'Ctrl+,', category: 'Outils', action: () => setSettingsOpen(true) },
       { id: 'tools.snippets', label: 'Gérer les snippets…', category: 'Outils', action: () => setSnippetsOpen(true) },
@@ -807,6 +821,17 @@ export default function App() {
     }
   }
 
+  async function exportActiveDocToPdf() {
+    if (!activeDoc) return;
+    try {
+      setStatus('Préparation du PDF…');
+      await exportToPdf(activeDoc.name, activeDoc.content);
+      setStatus('Boîte de dialogue d’impression ouverte — choisissez « Enregistrer en PDF ».');
+    } catch (error) {
+      setStatus(`Échec de l'export PDF : ${String(error)}`);
+    }
+  }
+
   async function exportToHtml() {
     if (!activeDoc) return;
     try {
@@ -1205,11 +1230,16 @@ ${html}
     renameActiveFile: () => void renameActiveFile(),
     deleteActiveFile: () => void deleteActiveFile(),
     exportToHtml: () => void exportToHtml(),
+    exportToPdf: () => void exportActiveDocToPdf(),
+    exportSite: () => setExportSiteOpen(true),
     copyAsHtml: () => void copyAsHtml(),
     copyAsWhatsApp: () => void copyAsWhatsApp(),
     openLibraryPicker: () => setLibraryPickerOpen(true),
     switchToFolder: (folder: string) => void switchToFolder(folder),
-    openBrokenLinks: () => setBrokenLinksOpen(true)
+    openBrokenLinks: () => setBrokenLinksOpen(true),
+    openPresentation: () => {
+      if (activeDoc) setPresentationOpen(true);
+    }
   };
 
   // ── Keyboard shortcuts ─────────────────────────────────────────────
@@ -1222,6 +1252,11 @@ ${html}
         if (event.key === '2') { event.preventDefault(); setViewMode('split'); return; }
         if (event.key === '3') { event.preventDefault(); setViewMode('preview'); return; }
         if (event.key === '4') { event.preventDefault(); setViewMode('graph'); return; }
+        if (event.key === '5') {
+          event.preventDefault();
+          if (activeDoc) setPresentationOpen(true);
+          return;
+        }
       }
 
       // Esc exits graph fullscreen
@@ -1309,6 +1344,16 @@ ${html}
               id: 'file.export.html',
               text: 'Exporter en HTML…',
               action: () => menuActionsRef.current.exportToHtml()
+            },
+            {
+              id: 'file.export.pdf',
+              text: 'Exporter en PDF…',
+              action: () => menuActionsRef.current.exportToPdf()
+            },
+            {
+              id: 'file.export.site',
+              text: 'Exporter en site statique…',
+              action: () => menuActionsRef.current.exportSite()
             },
             {
               id: 'file.export.copy-html',
@@ -1499,6 +1544,12 @@ ${html}
               text: 'Mode graphe',
               accelerator: 'Alt+4',
               action: () => menuActionsRef.current.setViewMode('graph')
+            },
+            {
+              id: 'view.presentation',
+              text: 'Mode présentation',
+              accelerator: 'Alt+5',
+              action: () => menuActionsRef.current.openPresentation()
             }
           ]
         });
@@ -1968,6 +2019,20 @@ ${html}
         rootFolder={rootFolder}
         onClose={() => setBrokenLinksOpen(false)}
         onOpenFile={(path) => void openFile(path)}
+      />
+
+      <ExportSiteDialog
+        open={exportSiteOpen}
+        rootFolder={rootFolder}
+        onClose={() => setExportSiteOpen(false)}
+        onStatus={(msg) => setStatus(msg)}
+      />
+
+      <SlidePresenter
+        open={presentationOpen}
+        content={activeDoc?.content ?? ''}
+        title={activeDoc?.name ?? 'Présentation'}
+        onClose={() => setPresentationOpen(false)}
       />
 
       <LibraryPicker

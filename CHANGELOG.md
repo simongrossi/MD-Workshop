@@ -3,6 +3,100 @@
 Toutes les évolutions notables du projet sont listées ici.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et le projet applique [SemVer](https://semver.org/lang/fr/).
 
+## [0.6.0] — 2026-04-29
+
+Version centrée sur l'**export et la diffusion**. MD Workshop ne sert plus
+seulement à écrire — il publie. Trois sorties cibles s'ajoutent : site statique
+complet, PDF, et mode présentation plein écran. Aucun changement de format
+fichier, aucune migration nécessaire.
+
+### Ajouté — Export en site statique
+
+- **Nouveau dialog « Exporter en site statique… »** (palette de commandes +
+  Fichier → Exporter). Génère un site HTML complet du workspace avec :
+  - Une page HTML par note, structure miroir du dossier source.
+  - Sidebar de navigation arborescente, identique sur toutes les pages.
+  - Section **« Mentions liées »** (backlinks) en pied de chaque page,
+    alimentée par l'index SQLite — la fonctionnalité-phare d'Obsidian Publish,
+    livrée localement et gratuitement.
+  - **Pages de tags** générées automatiquement (`tags/<slug>.html`).
+  - **Page d'index** avec liste complète + récemment modifiés.
+  - **CSS unique autonome** (`_site/style.css`) avec thème clair/sombre via
+    `prefers-color-scheme`, surchargeable par `data-theme="dark"`.
+  - **`sitemap.xml` + canonical links** générés si `baseurl` est renseigné.
+  - **Réécriture des liens** : `[[wiki-links]]` et liens markdown relatifs
+    `[texte](./autre.md)` pointent vers les `.html` correspondants. Liens
+    non résolus stylés en warning.
+  - **Copie automatique** du dossier `assets/` du workspace.
+  - **Barre de progression** par note pendant la génération.
+- **Output par défaut** : `<workspace>/_site/` (convention Jekyll, masqué
+  dans la sidebar de l'éditeur). Bouton « Parcourir… » pour cibler ailleurs.
+- **Options** : thème (auto / clair / sombre), inclure backlinks, copier
+  `assets/`, base URL pour les sites publiés.
+- **Sécurité** : refus d'écrire sur la racine du workspace, validation des
+  chemins relatifs (rejet de `..`, drive letters, root anchors).
+
+### Ajouté — Mode présentation / slides
+
+- **Nouveau mode plein écran** (`Alt+5`) qui transforme la note active en deck
+  de slides. Convention CommonMark : une ligne `---` (ou `***`, `___`) seule
+  sépare deux slides. Le front matter YAML est ignoré comme séparateur.
+- **Navigation clavier** : `←` / `→` / `Espace` / `PageUp` / `PageDown` /
+  `Home` / `End` / `Esc` pour quitter.
+- **Mode focus** (`F`) : cache topbar et footer, ne laisse que le contenu de
+  la slide. Utile en présentation projetée.
+- **Click n'importe où** sur la slide → slide suivante (présenter sans clavier).
+- **Compteur tabulaire** « N / total » en topbar.
+- Réutilise le rendu marked + DOMPurify partagé du preview, avec une CSS
+  dédiée qui adapte la typographie (`clamp()` pour des titres responsifs au
+  zoom du présentateur).
+
+### Ajouté — Export PDF
+
+- **Nouvelle commande « Exporter en PDF… »** (palette + Fichier → Exporter).
+  Construit un document HTML print-friendly du document actif et déclenche la
+  boîte de dialogue d'impression native. L'utilisateur choisit
+  « Enregistrer en PDF » comme imprimante (Windows / macOS / Linux gèrent
+  cette destination en standard).
+- **CSS print dédié** : `@page A4` avec marges 18mm/16mm, sauts de page
+  automatiques avant les `<h1>`, blocs `<pre>` / tables / blockquotes
+  insécables (`page-break-inside: avoid`), `orphans: 3` / `widows: 3` sur
+  les paragraphes, code wrappé pour ne pas déborder.
+- Pas de dépendance Rust ajoutée (`window.print()` via iframe caché).
+- Les wiki-links sont conservés visuellement mais aplatis (pas de navigation
+  inter-PDF — l'export site statique reste la cible pour la navigation).
+
+### Ajouté — Documentation
+
+- Nouvelle section **« Volontairement exclu »** dans la roadmap pour
+  expliciter les anti-features (système de plugins, sync cloud propriétaire,
+  langage de scripting dans les notes, WYSIWYG, collaboration temps réel).
+
+### Technique
+
+- Nouveau command Tauri `write_static_site(root, output_dir, files, copy_assets)`
+  — pure plomberie I/O, le rendu Markdown reste côté frontend pour garantir la
+  parité avec le preview.
+- Nouveaux modules frontend :
+  - `src/lib/staticSite.ts` — orchestration de l'export site (sidebar
+    arborescente, réécriture de liens, génération de pages tags, sitemap).
+  - `src/lib/staticSiteStyles.ts` — feuille de styles autonome du site exporté.
+  - `src/lib/slides.ts` — split sur séparateurs thématiques + rendu partagé.
+  - `src/lib/pdfExport.ts` — pipeline iframe + print.
+  - `src/components/ExportSiteDialog.tsx`, `src/components/SlidePresenter.tsx`.
+- Tous les exports reposent exclusivement sur les commandes Tauri existantes
+  côté Rust (`list_markdown_files`, `read_markdown_file`, `get_backlinks`,
+  `reveal_in_file_manager`) — pas de duplication de logique de rendu.
+
+### Non-régression
+
+- Aucun changement de format fichier, aucune migration de l'index SQLite.
+- L'export HTML mono-fichier (`Fichier → Exporter en HTML`) existe toujours,
+  inchangé — il complète l'export site statique pour les cas où on veut juste
+  partager une note isolée.
+
+---
+
 ## [0.5.0] — 2026-04-18
 
 ### Changé — Stockage de l'index SQLite

@@ -68,6 +68,8 @@
 
 ### 📤 Export
 - **Exporter en HTML** (fichier autonome avec styles)
+- **Exporter en PDF** — boîte de dialogue d'impression native, CSS print dédié (A4, sauts de page, blocs insécables)
+- **Exporter en site statique** — tout le workspace en HTML : sidebar de navigation, backlinks par page, pages de tags, `sitemap.xml` + canonical links optionnels (`baseurl`), thème clair/sombre/auto, copie de `assets/`
 - **Copier en HTML riche** (presse-papiers → coller dans un email)
 - **Copier pour WhatsApp** (`Ctrl+Shift+W`) — conversion du Markdown vers la syntaxe *WhatsApp*
 
@@ -83,6 +85,7 @@
 - **Thème clair / sombre**
 - Paramètres (`Ctrl+,`) : police, taille, wrap, numéros, tab size, thème, mode par défaut
 - Vues **Édition / Split / Aperçu / Graphe** redimensionnables
+- **Mode présentation** (`Alt+5`) — `---` sépare les slides, plein écran, navigation clavier, mode focus (`F`)
 - Sidebar + split redimensionnables, tailles persistées
 - **Palette de commandes** (`Ctrl+Shift+P`)
 - **Barre de statut** (type Notepad++) : position curseur, caractères, mots, lignes, encodage UTF-8, EOL
@@ -104,6 +107,7 @@
 | `Ctrl+Shift+W` | Copier pour WhatsApp |
 | `Ctrl+,` | Paramètres |
 | `Alt+1/2/3/4` | Mode édition / split / aperçu / graphe |
+| `Alt+5` | Mode présentation (slides) |
 
 ## Architecture
 
@@ -154,7 +158,7 @@ Tables principales :
 
 ## Roadmap
 
-Voir [ROADMAP.md](./ROADMAP.md). 30/37 features faites (≈ 81 %) — Phase 4 (vue graphe) livrée. Restent principalement les templates / table editor / minimap (Phase 5) et l'export PDF / site statique / front matter typé (Phase 7).
+Voir [ROADMAP.md](./ROADMAP.md). 34/41 features faites (≈ 83 %) — la **v0.6.0** ajoute l'export site statique, l'export PDF et le mode présentation. Restent principalement les templates / table editor / minimap (Phase 5), l'export livre multi-doc et le front matter typé (Phase 7).
 
 ## Changelog
 

@@ -37,11 +37,12 @@ Vision : l'outil ultime léger du Markdown. Un Obsidian minimaliste, rapide, san
 
 ## Phase 5 — Édition avancée
 
-- [ ] Templates (créer un fichier depuis un modèle)
+- [ ] **Templates avec variables** — modèles `meeting.md`, `book-note.md`… avec placeholders (`{{date}}`, `{{title}}`, prompt utilisateur). À combiner avec `Ctrl+D` pour des dailies pré-remplies
 - [x] Snippets (raccourcis pour blocs récurrents)
 - [x] Checkbox interactives (cocher dans le preview met à jour le source)
 - [x] Fold/unfold des sections par heading
 - [x] Drag & drop d'images (sauvegarde dans `assets/` + insertion du lien)
+- [ ] **Cross-références cliquables** — auto-numérotation `Figure N` / `Tableau N` / `Équation N` + syntaxe `[@fig:nom]` → ancre cliquable (rendu preview + export site)
 - [ ] Table editor (édition visuelle des tableaux markdown)
 - [ ] Minimap
 
@@ -56,9 +57,31 @@ Vision : l'outil ultime léger du Markdown. Un Obsidian minimaliste, rapide, san
 ## Phase 7 — Export & Personnalisation
 
 - [x] Thèmes light/dark (custom à venir)
-- [ ] Export PDF
+- [x] **Export PDF** — boîte de dialogue d'impression native via iframe + `window.print()`. CSS print dédié (A4, marges 18/16 mm, sauts de page sur `<h1>`, blocs insécables)
+- [ ] **Export livre / multi-doc PDF** — compiler un dossier ou une sélection de notes en un seul PDF avec TOC, numéros de page, chapitres = headings. Coche la case « Book/article export » du comparatif Quarkdown
 - [x] **Import PDF** (conversion PDF → Markdown via pdf-inspector, sans OCR)
-- [ ] Export HTML statique (mini-site)
+- [x] Export HTML statique (mini-site) — site complet du workspace avec sidebar, backlinks, pages tags, sitemap.xml optionnel
 - [x] Copier en HTML riche (pour coller dans un email)
+- [x] **Mode présentation / slides** — `---` = saut de slide, mode plein écran (`Alt+5`), navigation `←` / `→` / `Espace` / `Home` / `End` / `Esc`, mode focus `F`. Réutilise le rendu preview
 - [ ] Front matter intelligent (autocomplétion des clés)
 - [ ] Propriétés typées dans le front matter (dates, listes, booléens)
+
+---
+
+## Volontairement exclu
+
+Ces fonctionnalités sortent de la philosophie « léger, sans bloat » et ne
+sont pas prévues — pas un oubli, un choix.
+
+- **Système de plugins** — multiplie surface de bugs et complexité. Si une
+  fonctionnalité est utile à 80 % des utilisateurs, elle doit être native ;
+  sinon elle ne doit pas exister
+- **Sync cloud / serveur propriétaire** — les fichiers restent locaux.
+  Utilisez Syncthing, iCloud Drive, Dropbox, Git
+- **Langage de scripting dans les notes** — Markdown reste Markdown. Les
+  templates avec variables (Phase 5) couvrent 95 % des cas, sans dialecte
+  propriétaire à apprendre
+- **Éditeur WYSIWYG** — l'édition reste source-first (CodeMirror). Le mode
+  preview sert à *voir*, pas à éditer en mode Word
+- **Collaboration temps réel** — pas l'usage cible (notes personnelles ou
+  petites équipes asynchrones)
